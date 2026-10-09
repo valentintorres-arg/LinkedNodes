@@ -1,1 +1,189 @@
 # LinkedNodes
+
+LinkedNodes turns a folder into a knowledge graph. It reads four kinds of content
+and connects them:
+
+- **Code**: files, classes, functions, imports, calls and inheritance.
+- **Notes**: Markdown, text and PDF files, with the links between them.
+- **Saved content**: bookmark, likes and read-later exports.
+- **Images**: diagrams, screenshots and whiteboards.
+
+The point is the connections across kinds: a bookmark, a note and a function that
+are all about the same idea end up attached to the same concept node.
+
+It runs as a Claude Code skill. A Python tool does everything mechanical, and
+Claude reads the notes, images and saved links to say what they are about.
+
+## Install
+
+```
+pip install -e .
+python -m linkednodes install
+```
+
+The second command copies the skill to `~/.claude/skills/linkednodes/`. Add
+`--project` to install it into the current project's `.claude` folder instead.
+
+## Use
+
+In Claude Code, from the folder you want to graph:
+
+```
+/linkednodes .
+```
+
+Claude scans the folder, reads what needs reading, builds the graph and tells you
+what it found. The results land in `linkednodes-out/`:
+
+| File | What it is |
+| --- | --- |
+| `graph.html` | Interactive graph. Opens in any browser, works offline. |
+| `GRAPH_REPORT.md` | Most connected nodes, surprising connections, communities, what you keep saving. |
+| `graph.json` | The full graph, for queries and for other tools. |
+
+Afterwards you can ask questions about the folder and Claude answers from the
+graph. The same queries work from a terminal:
+
+```
+python -m linkednodes query "pricing"
+python -m linkednodes node "total_price"
+python -m linkednodes path "Tokio tutorial" "Rust"
+```
+
+Run `/linkednodes .` again after changes. Only new and changed files are read.
+
+## The viewer
+
+`graph.html` has a search box in the top bar (press `/`), filters by node kind and
+by number of connections, colouring by community or by kind, and sliders for labels,
+node size, link thickness and the layout forces: centre, repel, link strength and
+link distance. Selecting a node shows its connections, and can narrow the graph to
+its neighbours. The interface is dark and dense, and is in Spanish when the browser
+is, in English otherwise.
+
+The side panels slide over the graph instead of resizing it, so opening or closing
+one never redraws or clears the canvas; the camera moves so that what you were
+looking at stays in view.
+
+## Git
+
+When the folder is a git repository, the graph also carries what git knows. Apart
+from the optional hook at the end of this list, nothing here writes to the repository.
+
+- **What changed and what uses it.** The Git section of the viewer lists the files
+  that differ from the last commit, uncommitted work included. Switch on the
+  highlight and the changed nodes get an orange ring, the nodes that use them a
+  dashed one, and the rest fades. Changes are narrowed down to the functions and
+  methods whose lines were touched. With the server running you can compare with any
+  commit, branch or tag and refresh; `graph.html` on its own shows the state at
+  build time.
+- **History per node.** Each node's panel shows when its file last changed, who
+  changed it and in how many commits. "Colour by" gains two options, activity and
+  last change, which show history as brightness.
+- **Files that change together.** Two files that share at least two commits, and at
+  least half the commits of the quieter one, get a `changes_with` edge. Commits that
+  touch more than 25 files are not counted as pairings. The report lists the pairs
+  and says which have no other link between them: coupling the code does not show.
+- **In the editor.** The Code tab shows a letter for the file's state (M, U, A), a
+  bar beside every line that differs from the last commit, and a button that swaps
+  the editor for the diff. The diff is what is saved on disk; unsaved edits are not
+  in it.
+- **Authors.** When at least two people each made a tenth of the commits, each
+  becomes a node linked to the files they committed to. One person using two names
+  with the same email counts once; with two emails, git cannot tell and neither can
+  this.
+- **From the terminal**, and for Claude:
+
+  ```
+  python -m linkednodes changed
+  python -m linkednodes changed --base main
+  ```
+- **Automatic rebuild.** `python -m linkednodes hook install` adds `post-commit` and
+  `post-merge` hooks that run `linkednodes refresh` in the background, so the graph
+  follows the code. New notes and images still wait for Claude to read them. The
+  hooks live in `.git/hooks`, are not committed, and a hook you already have is never
+  overwritten. `python -m linkednodes hook remove` takes them out. This is the only
+  command that writes inside `.git`.
+
+History is per file, not per function: every function in a file shares its file's
+dates and counts. Which functions changed is worked out from the line numbers
+recorded at the last build, so it drifts if code has moved a lot since then.
+
+## Editing nodes and attaching notes
+
+A page opened from disk cannot write files, so editing runs through a local server:
+
+```
+python -m linkednodes serve .
+```
+
+On Windows, every build also writes `linkednodes-out/open-graph.ps1`, which does the
+same for that folder: right click it and choose "Run with PowerShell".
+
+It opens the same viewer with three more tabs on every node:
+
+- **Note**: documentation for the node, written in Markdown. Each note is a file in
+  `linkednodes-out/notes/`, so it can be committed with the project. Nodes with a
+  note are ringed in the graph, and Claude reads the notes when it queries the graph.
+- **Properties**: correct the node's name, kind or description. Corrections are kept
+  in `linkednodes-out/nodes.json` and applied on every build.
+- **Code**: the file the node comes from, opened at the node's line, editable and
+  saved to disk. The editor follows Visual Studio Code's dark theme: syntax colours
+  for the languages the scanner reads, line numbers, breadcrumbs, a status bar with
+  the caret position, automatic indentation, Tab and Shift+Tab to indent a
+  selection, and Ctrl+S to save. It has no completion or error checking. Rebuild the
+  graph from the same tab to see the effect of a change.
+
+The server listens on 127.0.0.1 only and refuses requests that do not carry the
+token it hands to its own page. It edits only the code and text files that the scan
+found in the folder, and refuses to save over a file that changed on disk after it
+was opened.
+
+## How it works
+
+1. **Scan** (`linkednodes scan`) finds the files, extracts everything that needs no
+   model, and writes a queue of chunks to `linkednodes-out/.work/todo.json`.
+2. **Read**: Claude works through the queue and writes one JSON result per chunk:
+   the concepts in each note and image, and one to three topics per saved link.
+3. **Build** (`linkednodes build`) validates the results, stores them in a cache
+   keyed by file hash, merges everything, clusters the graph and writes the outputs.
+
+Every edge carries a confidence label:
+
+- `EXTRACTED`: stated in the source, such as an import or a link in a note.
+- `INFERRED`: a conclusion, such as the topic of a bookmark.
+- `AMBIGUOUS`: plausible but unsure; the report lists these for review.
+
+## Saved content formats
+
+| Source | File |
+| --- | --- |
+| Chrome, Firefox, Edge, Safari bookmarks | exported `.html` |
+| Firefox bookmark backup | `.json` |
+| X/Twitter archive | `like.js`, `bookmark.js` |
+| YouTube Takeout | playlist `.csv`, history `.json` |
+| Pocket, Raindrop, Instapaper, Reddit | export `.csv` or `.html` |
+| Anything else | `.json` or `.csv` with a URL field, a `.txt` list of URLs, Windows `.url` shortcuts |
+
+Only the title, URL, folder, tags and note of each item are used. Pages are not
+downloaded.
+
+## Limits
+
+- Python is parsed with its syntax tree, so its edges are exact. JavaScript,
+  TypeScript, Go, Rust, Java, C#, Ruby and PHP are read with regexes: definitions
+  and imports are reliable, calls are best guesses and marked `INFERRED`.
+- In a git repository, files that git ignores are skipped, so build output and
+  generated code stay out of the graph. An export you keep out of git is skipped
+  too; graph it from a folder that is not a repository.
+- A JSON or CSV file with three or more URL records is treated as an export. List
+  files that are not in `.linkednodesignore` (one glob pattern per line).
+- The browser view shows the 4,000 most connected nodes of larger graphs.
+- Two different spellings of one topic become two nodes. The skill gives Claude
+  the existing vocabulary to prevent this, but it can still happen.
+
+## Tests
+
+```
+python -m unittest discover -s tests
+```

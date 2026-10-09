@@ -1,0 +1,1452 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__ - LinkedNodes</title>
+<style>
+:root {
+  --bg: #0b0c0e; --panel: #1b1d20; --raised: #26292d; --line: rgba(255, 255, 255, .12);
+  --border: rgba(255, 255, 255, .32); --ink: #ffffff; --muted: #b4b7bc; --dim: #7d8187;
+  --paper: #ededed; --paper-ink: #17181a; --accent: #b9a8ff; --accent-soft: #b9a8ff;
+  --hover: rgba(255, 255, 255, .08); --bad: #ff9c9c;
+  --edge: rgba(255, 255, 255, .17); --edge-hi: rgba(255, 255, 255, .95);
+  --ease: cubic-bezier(.2, .8, .2, 1); --gap: 12px; --bar: 52px; --side-w: 324px; --detail-w: 0px;
+  --sans: "Neue Haas Grotesk Text Pro", "Helvetica Neue", Helvetica, Inter, Arial, sans-serif;
+  --mono: "Cascadia Code", "JetBrains Mono", Consolas, Menlo, monospace;
+  interpolate-size: allow-keywords;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { overflow: hidden; background: var(--bg); color: var(--ink); font: 13px/1.4 var(--sans); }
+body.no-side { --side-w: 0px; }
+p { margin: 0 0 8px; overflow-wrap: anywhere; }
+ul { list-style: none; margin: 0; padding: 0; }
+a { color: var(--ink); text-underline-offset: 2px; }
+.muted { color: var(--muted); }
+.grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+
+/* ---- the graph fills the window; a bar and two slabs float over it and never resize it */
+#stage { position: fixed; inset: 0; overflow: hidden; }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+#bar {
+  position: fixed; top: var(--gap); left: var(--gap); right: var(--gap); height: var(--bar); z-index: 5;
+  display: flex; align-items: center; gap: 16px; padding: 0 10px 0 20px; background: var(--panel); border-radius: 4px;
+}
+#title { font-size: 17px; letter-spacing: -.01em; white-space: nowrap; }
+#stats, .tag, summary, h3, .count {
+  font: 500 10px/1.2 var(--sans); text-transform: uppercase; letter-spacing: .11em;
+}
+#stats { color: var(--dim); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
+#finder { position: relative; margin-left: auto; width: min(400px, 40vw); }
+#search {
+  width: 100%; height: 32px; padding: 0 34px 0 12px; font: inherit; color: var(--ink); background: none;
+  border: 1px solid var(--border); border-radius: 0;
+}
+#search::placeholder { color: var(--dim); }
+#search:focus { outline: none; border-color: var(--ink); }
+#finder kbd { position: absolute; right: 10px; top: 9px; font: 11px/14px var(--mono); color: var(--dim); pointer-events: none; }
+#results {
+  position: absolute; top: 40px; left: 0; right: 0; max-height: 62vh; overflow-y: auto; background: var(--panel);
+  border: 1px solid var(--border); box-shadow: 0 16px 40px rgba(0, 0, 0, .6);
+}
+#results li.on .item { background: var(--ink); color: #000; }
+#results li.on .tag { color: #000; border-color: rgba(0, 0, 0, .3); }
+aside {
+  position: absolute; top: calc(var(--gap) * 2 + var(--bar)); bottom: var(--gap); background: var(--panel);
+  border-radius: 4px; overflow-y: auto; scrollbar-color: rgba(255, 255, 255, .25) transparent; scrollbar-width: thin;
+}
+#side { left: var(--gap); width: 300px; padding: 4px 18px 20px; transition: transform .34s var(--ease); }
+body.no-side #side { transform: translateX(calc(-100% - 24px)); visibility: hidden; transition: transform .34s var(--ease), visibility 0s .34s; }
+#detail {
+  right: var(--gap); width: 360px; max-width: 92vw; padding: 20px 18px; visibility: hidden;
+  transform: translateX(calc(100% + 24px)); transition: transform .34s var(--ease), width .34s var(--ease), visibility 0s .34s;
+}
+#detail.open { transform: none; visibility: visible; transition: transform .34s var(--ease), width .34s var(--ease); }
+#detail.roomy { width: min(840px, 60vw); }
+#zoom {
+  position: absolute; right: calc(var(--detail-w) + var(--gap)); bottom: var(--gap); display: flex; flex-direction: column;
+  background: var(--panel); transition: right .34s var(--ease);
+}
+#zoom .btn + .btn { border-top: 0; }
+#hint {
+  position: absolute; left: calc(var(--side-w) + var(--gap) + 4px); bottom: 14px; color: var(--dim); font-size: 11px;
+  pointer-events: none; transition: left .34s var(--ease);
+}
+
+/* ---- controls: square, outlined, white when they are the thing to press */
+.btn {
+  font: inherit; color: var(--ink); background: none; border: 1px solid var(--border); border-radius: 0; height: 32px;
+  padding: 0 14px; cursor: pointer; white-space: nowrap; transition: background .16s, color .16s, border-color .16s;
+}
+.btn:hover, .btn[aria-pressed=true] { background: var(--ink); color: #000; border-color: var(--ink); }
+.btn.primary { background: var(--ink); color: #000; border-color: var(--ink); }
+.btn.primary:hover { background: #cfcfcf; border-color: #cfcfcf; }
+.btn.icon { width: 32px; padding: 0; font-size: 15px; }
+.buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.tag { color: var(--muted); padding: 4px 6px; border: 1px solid var(--line); white-space: nowrap; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  font: inherit; height: 26px; padding: 0 9px; border: 0; cursor: pointer; display: inline-flex; align-items: center;
+  gap: 7px; background: var(--paper); color: var(--paper-ink); transition: background .16s, color .16s, box-shadow .16s;
+}
+.chip:hover { background: #fff; }
+.chip .count { opacity: .55; letter-spacing: .04em; }
+.chip[aria-pressed=false] { background: none; color: var(--dim); box-shadow: inset 0 0 0 1px var(--line); }
+.chip[aria-pressed=false]:hover { color: var(--ink); box-shadow: inset 0 0 0 1px var(--border); }
+details { border-bottom: 1px solid var(--line); }
+details::details-content { height: 0; overflow: clip; transition: height .3s var(--ease), content-visibility .3s allow-discrete; }
+details[open]::details-content { height: auto; }
+summary { cursor: pointer; list-style: none; display: flex; align-items: center; padding: 16px 0; color: var(--ink); }
+summary::-webkit-details-marker { display: none; }
+summary::after {  /* a plus that turns into a minus */
+  content: ""; margin-left: auto; width: 9px; height: 9px; transition: transform .3s var(--ease);
+  background: linear-gradient(var(--ink), var(--ink)) center / 100% 1px no-repeat, linear-gradient(var(--ink), var(--ink)) center / 1px 100% no-repeat;
+}
+details[open] > summary::after { transform: rotate(180deg); background-size: 100% 1px, 1px 0; }
+details > div { padding-bottom: 16px; }
+h3 { color: var(--dim); margin: 18px 0 8px; }
+details h3:first-child { margin-top: 0; }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 0 8px; align-items: baseline; padding: 8px 0 0; }
+.row output { font: 11px/1 var(--mono); color: var(--dim); }
+.row input { grid-column: 1 / -1; }
+input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 20px; margin: 0; background: none; cursor: pointer; }
+input[type=range]::-webkit-slider-runnable-track {
+  height: 1px; background: linear-gradient(to right, var(--ink) var(--fill, 0%), var(--border) var(--fill, 0%));
+}
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 9px; height: 9px; margin-top: -4px; background: var(--ink); }
+input[type=range]::-moz-range-track { height: 1px; background: var(--border); }
+input[type=range]::-moz-range-progress { height: 1px; background: var(--ink); }
+input[type=range]::-moz-range-thumb { width: 9px; height: 9px; border: 0; border-radius: 0; background: var(--ink); }
+.check { display: flex; gap: 10px; align-items: center; padding: 5px 0; cursor: pointer; }
+.check input {
+  -webkit-appearance: none; appearance: none; width: 14px; height: 14px; margin: 0; border: 1px solid var(--border);
+  display: grid; place-content: center; cursor: pointer; transition: background .16s;
+}
+.check input:checked { background: var(--ink); border-color: var(--ink); }
+.check input:checked::after { content: ""; width: 6px; height: 6px; background: #000; }
+select, .field, textarea { font: inherit; color: var(--ink); background: none; border: 1px solid var(--border); border-radius: 0; }
+select { height: 28px; padding: 0 6px; margin-left: auto; background: var(--panel); }
+.field, textarea { width: 100%; padding: 8px 10px; display: block; }
+.field:focus, textarea:focus { outline: none; border-color: var(--ink); }
+textarea { resize: vertical; min-height: 260px; line-height: 1.5; }
+.item {
+  font: inherit; color: inherit; background: none; border: 0; padding: 8px 6px; width: 100%; text-align: left;
+  cursor: pointer; display: flex; gap: 10px; align-items: center; transition: background .16s;
+}
+.item:hover { background: var(--hover); }
+.item[aria-pressed=true] { background: var(--ink); color: #000; }
+.item[aria-pressed=true] .count { color: #000; }
+.item .count { color: var(--dim); }
+li + li > .item { box-shadow: inset 0 1px 0 var(--line); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.stack { display: block; margin-bottom: 12px; }
+.stack > span { display: block; margin-bottom: 6px; color: var(--muted); }
+.status { min-height: 1.45em; margin-top: 8px; color: var(--muted); }
+.status.bad { color: var(--bad); }
+
+/* ---- detail panel */
+#close { position: absolute; top: 14px; right: 14px; }
+h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em; margin: 0 44px 14px 0; overflow-wrap: anywhere; }
+.facts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.path { font: 11.5px/1.4 var(--mono); color: var(--dim); }
+.tabs { display: flex; gap: 20px; margin: 16px 0; border-bottom: 1px solid var(--line); }
+.tab {
+  font: inherit; color: var(--dim); background: none; border: 0; padding: 8px 0 10px; margin-bottom: -1px; cursor: pointer;
+  border-bottom: 1px solid transparent; transition: color .16s, border-color .16s;
+}
+.tab:hover { color: var(--ink); }
+.tab[aria-selected=true] { color: var(--ink); border-bottom-color: var(--ink); }
+.md h3, .md h4 { color: var(--ink); font: 400 18px/1.2 var(--sans); text-transform: none; letter-spacing: -.01em; margin: 18px 0 8px; }
+.md h4 { font-size: 15px; }
+.md ul, .md ol { list-style: revert; padding-left: 22px; margin: 0 0 8px; }
+.md pre { background: var(--bg); padding: 10px 12px; overflow: auto; margin: 0 0 8px; }
+.md code { font: 12px/1.5 var(--mono); background: var(--bg); padding: 1px 4px; }
+.md pre code { padding: 0; }
+
+/* ---- code editor, in the colours of Visual Studio Code's Dark+ theme */
+.ide {
+  --ide-bg: #1e1e1e; --ide-fg: #d4d4d4; display: flex; flex-direction: column; height: calc(100vh - 360px);
+  min-height: 260px; overflow: hidden; box-shadow: 0 0 0 1px #3c3c3c; background: var(--ide-bg);
+}
+.ide-tabs { display: flex; background: #252526; flex: none; }
+.ide-tab {
+  display: flex; align-items: center; gap: 8px; padding: 0 14px; height: 34px; background: var(--ide-bg);
+  color: #fff; box-shadow: inset 0 1px 0 #007acc; font: 13px "Segoe UI", system-ui, sans-serif;
+}
+.ide-lang { font: 700 9.5px/1 var(--mono); color: #3794ff; letter-spacing: .02em; }
+.ide-dot { width: 8px; height: 8px; border-radius: 50%; }
+.ide-dot.on { background: #c5c5c5; }
+.ide-crumbs {
+  flex: none; padding: 3px 14px 4px; font: 12px "Segoe UI", system-ui, sans-serif; color: #a0a0a0; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.ide-crumbs b { color: #dcdcaa; font-weight: 400; }
+.ide-body { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: auto 1fr; overflow: hidden; }
+.ide-band { position: absolute; left: 0; right: 0; top: 0; height: 20px; background: rgba(255, 255, 255, .045); pointer-events: none; }
+.ide-mark { position: absolute; left: 0; top: 0; width: 3px; height: 20px; background: #dcdcaa; pointer-events: none; }
+.ide-gutter, .ide-paint, .ide-text { font: 13px/20px var(--mono); tab-size: 2; margin: 0; }
+.ide-gutter { padding: 8px 14px 8px 16px; text-align: right; color: #858585; overflow: hidden; user-select: none; position: relative; }
+.ide-wrap { position: relative; min-width: 0; }
+.ide-paint, .ide-text { position: absolute; inset: 0; padding: 8px 12px 8px 4px; white-space: pre; border: 0; }
+.ide-paint { overflow: hidden; color: var(--ide-fg); pointer-events: none; }
+.ide-text {
+  width: 100%; height: 100%; min-height: 0; overflow: auto; resize: none; background: transparent;
+  color: transparent; -webkit-text-fill-color: transparent; caret-color: #aeafad; scrollbar-color: #4f4f4f transparent;
+}
+.ide-text:focus, .ide-text:focus-visible { outline: none; }
+.ide-text::selection { background: rgba(38, 79, 120, .7); }
+.ide-status {
+  flex: none; display: flex; gap: 16px; align-items: center; height: 22px; padding: 0 12px; background: #007acc;
+  color: #fff; font: 12px "Segoe UI", system-ui, sans-serif; white-space: nowrap;
+}
+.ide-git { font: 700 11px/1 var(--mono); }
+.ide-changes { position: absolute; left: 5px; top: 0; width: 3px; pointer-events: none; }
+.ide-changes i { position: absolute; left: 0; width: 3px; background: #1b81a8; }
+.ide-diff {
+  flex: 1; min-height: 0; margin: 0; overflow: auto; padding: 8px 0; font: 13px/20px var(--mono);
+  color: var(--ide-fg); tab-size: 2;
+}
+.ide-diff span { display: block; padding: 0 14px; white-space: pre; min-width: max-content; }
+.ide-diff .add { background: rgba(46, 160, 67, .22); }
+.ide-diff .del { background: rgba(248, 81, 73, .2); }
+.ide-diff .hunk { color: #569cd6; }
+.ide-diff .meta { color: #858585; }
+.ide .k { color: #569cd6; } .ide .k2 { color: #c586c0; } .ide .s { color: #ce9178; } .ide .n { color: #b5cea8; }
+.ide .c { color: #6a9955; } .ide .f { color: #dcdcaa; } .ide .t { color: #4ec9b0; } .ide .v { color: #9cdcfe; }
+.ide .o { color: #4fc1ff; } .ide .h { color: #569cd6; font-weight: 700; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media (max-width: 760px) { #stats, #hint { display: none; } #side { width: min(300px, 80vw); } }
+</style>
+</head>
+<body>
+<header id="bar">
+  <span id="title"></span>
+  <span id="stats"></span>
+  <div id="finder">
+    <input type="search" id="search" autocomplete="off" spellcheck="false">
+    <kbd>/</kbd>
+    <ul id="results" hidden></ul>
+  </div>
+  <button id="menu" class="btn icon">&#9776;</button>
+</header>
+<main id="stage">
+  <canvas id="canvas"></canvas>
+  <div id="hint"></div>
+  <div id="zoom"></div>
+  <aside id="side">
+    <details open><summary id="h-filters"></summary><div id="filters"></div></details>
+    <details open><summary id="h-groups"></summary><div id="groups"></div></details>
+    <details open><summary id="h-git"></summary><div id="git"></div></details>
+    <details><summary id="h-display"></summary><div id="display"></div></details>
+    <details><summary id="h-forces"></summary><div id="forces"></div></details>
+  </aside>
+  <aside id="detail" aria-live="polite"></aside>
+</main>
+<script type="application/json" id="data">__DATA__</script>
+<script>
+(() => {
+  'use strict';
+  const DATA = JSON.parse(document.getElementById('data').textContent);
+  const EDIT = DATA.edit || null;
+  const $ = id => document.getElementById(id);
+  const canvas = $('canvas'), ctx = canvas.getContext('2d'), stage = $('stage');
+
+  // ---- language: Spanish when the browser asks for it, English otherwise
+  const SPANISH = (navigator.language || 'en').toLowerCase().startsWith('es');
+  const TEXT = SPANISH ? {
+    search: 'Buscar un nodo', noMatches: 'Nada coincide', nodes: 'nodos', edges: 'relaciones',
+    showing: 'visibles', mostConnected: 'más conectados de', filters: 'Filtros', kinds: 'Tipos de nodo',
+    minDegree: 'Conexiones mínimas', inferred: 'Relaciones inferidas', groups: 'Grupos', colorBy: 'Color según',
+    byCommunity: 'comunidad', byKind: 'tipo', communities: 'Comunidades', display: 'Apariencia',
+    arrows: 'Flechas', labels: 'Etiquetas', nodeSize: 'Tamaño de los nodos', linkWidth: 'Grosor de las relaciones',
+    forces: 'Fuerzas', center: 'Fuerza hacia el centro', repel: 'Repulsión entre nodos', link: 'Fuerza de las relaciones',
+    distance: 'Longitud de las relaciones', reset: 'Restablecer ajustes', relayout: 'Reordenar',
+    hint: 'Rueda para acercar, arrastrar para mover, clic en un nodo para ver sus conexiones',
+    centerOn: 'Centrar', view: 'Mostrar', all: 'Todo', hop1: 'Sus vecinos', hop2: 'Dos saltos', close: 'Cerrar',
+    zoomIn: 'Acercar', zoomOut: 'Alejar', fit: 'Ajustar a la pantalla', panel: 'Mostrar u ocultar el panel',
+    solid: 'Línea continua: está en el código o el texto. Punteada: inferida.',
+    tabLinks: 'Conexiones', tabNote: 'Nota', tabProps: 'Propiedades', tabCode: 'Código',
+    notedOnly: 'Solo nodos con nota', noNote: 'Este nodo todavía no tiene nota.',
+    writeNote: 'Escribir una nota', editNote: 'Editar la nota', save: 'Guardar', cancel: 'Cancelar',
+    saving: 'Guardando...', loading: 'Cargando...',
+    notePlaceholder: 'Qué hace, por qué existe, qué conviene saber antes de tocarlo. Acepta Markdown.',
+    noteHelp: 'Se guarda como archivo Markdown en linkednodes-out/notes. Ctrl+S guarda.',
+    readOnly: 'Esta copia es de solo lectura. Para editar nodos y notas, abrí el grafo con: python -m linkednodes serve',
+    propLabel: 'Nombre', propKind: 'Tipo', propSummary: 'Descripción',
+    propsHelp: 'Un campo vacío vuelve al valor que se extrajo del proyecto.',
+    noSource: 'Este nodo no tiene un archivo de texto que se pueda editar acá.',
+    savedCode: 'Guardado en disco. El grafo muestra el cambio cuando lo reconstruís.',
+    revert: 'Descartar cambios', rebuild: 'Reconstruir el grafo', rebuilding: 'Reconstruyendo...',
+    unsaved: 'sin guardar', line: 'Lín', column: 'Col', spaces: 'Espacios: 2', plain: 'Texto',
+    git: 'Git', branch: 'Rama', compareWith: 'Comparar con (commit, rama o etiqueta)', refresh: 'Actualizar',
+    noChanges: 'Sin cambios respecto de', changedFiles: 'archivos con cambios', asBuilt: 'Estado de cuando se construyó el grafo.',
+    highlight: 'Resaltar los cambios y lo que los usa', byCommits: 'actividad (commits)', byRecency: 'último cambio',
+    lastChange: 'Último cambio', modified: 'modificado', added: 'nuevo', untracked: 'sin seguimiento', deleted: 'borrado',
+    legendGit: 'Anillo naranja: cambió. Anillo punteado: usa algo que cambió.',
+    showDiff: 'Ver cambios contra el último commit', hideDiff: 'Volver al editor',
+    diffNote: 'Es lo guardado en disco contra el último commit; lo que todavía no guardaste no aparece.',
+  } : {
+    search: 'Search for a node', noMatches: 'No matches', nodes: 'nodes', edges: 'edges',
+    showing: 'shown', mostConnected: 'most connected of', filters: 'Filters', kinds: 'Node kinds',
+    minDegree: 'Minimum connections', inferred: 'Inferred edges', groups: 'Groups', colorBy: 'Colour by',
+    byCommunity: 'community', byKind: 'kind', communities: 'Communities', display: 'Display',
+    arrows: 'Arrows', labels: 'Labels', nodeSize: 'Node size', linkWidth: 'Link thickness',
+    forces: 'Forces', center: 'Centre force', repel: 'Repel force', link: 'Link force',
+    distance: 'Link distance', reset: 'Reset settings', relayout: 'Rearrange',
+    hint: 'Scroll to zoom, drag to pan, click a node to see its connections',
+    centerOn: 'Centre', view: 'Show', all: 'Everything', hop1: 'Its neighbours', hop2: 'Two hops', close: 'Close',
+    zoomIn: 'Zoom in', zoomOut: 'Zoom out', fit: 'Fit to screen', panel: 'Show or hide the panel',
+    solid: 'Solid line: stated in the code or text. Dashed: inferred.',
+    tabLinks: 'Connections', tabNote: 'Note', tabProps: 'Properties', tabCode: 'Code',
+    notedOnly: 'Only nodes with a note', noNote: 'This node has no note yet.',
+    writeNote: 'Write a note', editNote: 'Edit the note', save: 'Save', cancel: 'Cancel',
+    saving: 'Saving...', loading: 'Loading...',
+    notePlaceholder: 'What it does, why it exists, what to know before changing it. Markdown works.',
+    noteHelp: 'Saved as a Markdown file in linkednodes-out/notes. Ctrl+S saves.',
+    readOnly: 'This copy is read-only. To edit nodes and notes, open the graph with: python -m linkednodes serve',
+    propLabel: 'Name', propKind: 'Kind', propSummary: 'Description',
+    propsHelp: 'An empty field goes back to the value extracted from the project.',
+    noSource: 'This node has no text file that can be edited here.',
+    savedCode: 'Saved to disk. The graph shows the change once you rebuild it.',
+    revert: 'Discard changes', rebuild: 'Rebuild the graph', rebuilding: 'Rebuilding...',
+    unsaved: 'unsaved', line: 'Ln', column: 'Col', spaces: 'Spaces: 2', plain: 'Plain text',
+    git: 'Git', branch: 'Branch', compareWith: 'Compare with (commit, branch or tag)', refresh: 'Refresh',
+    noChanges: 'No changes from', changedFiles: 'files with changes', asBuilt: 'As it was when the graph was built.',
+    highlight: 'Highlight the changes and what uses them', byCommits: 'activity (commits)', byRecency: 'last change',
+    lastChange: 'Last change', modified: 'modified', added: 'new', untracked: 'untracked', deleted: 'deleted',
+    legendGit: 'Orange ring: changed. Dashed ring: uses something that changed.',
+    showDiff: 'See changes since the last commit', hideDiff: 'Back to the editor',
+    diffNote: 'This is what is saved on disk against the last commit; unsaved edits are not in it.',
+  };
+  const KINDS = SPANISH ? {
+    file: 'archivo', function: 'función', class: 'clase', method: 'método', type: 'tipo', package: 'paquete',
+    doc: 'nota', image: 'imagen', saved: 'guardado', folder: 'carpeta', concept: 'concepto', tool: 'herramienta',
+    tag: 'etiqueta', person: 'persona', org: 'organización', paper: 'artículo', place: 'lugar', event: 'evento',
+  } : {};
+  const kindName = kind => KINDS[kind] || kind;
+  const number = value => value.toLocaleString(SPANISH ? 'es' : 'en');
+
+  // Elements are built with textContent, because labels come from arbitrary files and
+  // bookmarks. The one exception is the code editor's colouring, which escapes its input.
+  function el(tag, props, ...children) {
+    const node = Object.assign(document.createElement(tag), props || {});
+    for (const child of children) node.append(child);
+    return node;
+  }
+  const esc = text => text.replace(/[&<>]/g, ch => ch === '&' ? '&amp;' : ch === '<' ? '&lt;' : '&gt;');
+  const fold = text => text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  let seed = 42;
+  function rand() {  // seeded, so the same graph always lays out the same way
+    seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  }
+
+  // ---- settings, kept between visits
+  const DEFAULTS = {center: .35, repel: .5, link: .5, distance: 70, nodeSize: 1, linkWidth: 1,
+                    labels: .55, arrows: false, inferred: true, minDegree: 0, colorBy: 'community'};
+  const STORE = 'linkednodes-viewer';
+  const S = Object.assign({}, DEFAULTS);
+  try {
+    const kept = JSON.parse(localStorage.getItem(STORE)) || {};
+    for (const key in DEFAULTS) if (typeof kept[key] === typeof DEFAULTS[key]) S[key] = kept[key];
+  } catch (error) { /* storage is unavailable; the defaults apply */ }
+  function keep() {
+    try { localStorage.setItem(STORE, JSON.stringify(S)); } catch (error) { /* same */ }
+  }
+
+  // ---- data
+  const nodes = DATA.nodes.map(n => Object.assign({}, n, {
+    x: 0, y: 0, vx: 0, vy: 0, r: 4, links: [], live: 0, rank: 0, key: fold(n.label), where: fold(n.source_file || ''),
+  }));
+  const byId = new Map(nodes.map(n => [n.id, n]));
+  const edges = [];
+  for (const e of DATA.edges) {
+    const s = byId.get(e.source), t = byId.get(e.target);
+    if (!s || !t) continue;
+    const link = Object.assign({}, e, {s, t});
+    edges.push(link);
+    s.links.push({other: t, link, out: true});
+    t.links.push({other: s, link, out: false});
+  }
+  const communityLabel = new Map(DATA.communities.map(c => [c.id, c.label]));
+  const PALETTE = ['#b9a8ff', '#8fb8de', '#9fd3c7', '#e6c58f', '#e39a9a', '#d5d8dd', '#a7c98b', '#d6a5d6',
+                   '#7fc4d9', '#f0e3a1', '#c9a27e', '#9aa7ff', '#e0b3a0', '#8fd0a8'];
+  const FAMILY_COLOR = {code: '#8fb8de', concepts: '#e6c58f', notes: '#9fd3c7', images: '#d6a5d6', saved: '#e39a9a'};
+  const communityColor = id => id == null ? '#6c7076' : PALETTE[id % PALETTE.length];
+
+  const view = {x: 0, y: 0, k: 1};
+  const hiddenKinds = new Set();
+  let isolated = null, hover = null, selected = null, hops = 0, local = null, lit = null, notedOnly = false;
+  let active = nodes, activeEdges = edges, alpha = 1, dirty = true, aim = null;
+  // What git reports: the nodes that differ from a commit, and the nodes that use them.
+  const CHANGED = '#ffb454', CONTAINS = new Set(['contains', 'in_folder', 'part_of']);
+  const gitChanged = new Map(), gitImpact = new Set();
+  let GIT = DATA.git || null, gitFocus = false;
+  const theme = {};
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const shown = n => !hiddenKinds.has(n.kind) && (isolated == null || n.community === isolated)
+    && (n.degree || 0) >= S.minDegree && (!local || local.has(n)) && (!notedOnly || !!n.doc);
+  function refilter() {
+    active = nodes.filter(shown);
+    const on = new Set(active);
+    activeEdges = edges.filter(e => on.has(e.s) && on.has(e.t) && (S.inferred || e.confidence === 'EXTRACTED'));
+    for (const n of active) n.live = 0;
+    for (const e of activeEdges) { e.s.live++; e.t.live++; }
+    // The best connected nodes keep their label at any zoom, so the overview is never mute.
+    [...active].sort((a, b) => (b.degree || 0) - (a.degree || 0)).forEach((n, index) => { n.rank = index; });
+    $('stats').textContent = `${number(nodes.length)} ${TEXT.nodes}   ${number(edges.length)} ${TEXT.edges}`
+      + (DATA.total > nodes.length ? `   ${TEXT.mostConnected} ${number(DATA.total)}` : '')
+      + (active.length < nodes.length ? `   ${number(active.length)} ${TEXT.showing}` : '');
+    reheat();
+  }
+  function resizeNodes() {
+    for (const n of nodes) n.r = (2.5 + Math.sqrt(n.degree || 0) * 1.4) * S.nodeSize;
+    dirty = true;
+  }
+  function recolor() {
+    const files = (GIT && GIT.files) || {};
+    let most = 1, oldest = Infinity, newest = -Infinity;
+    for (const path in files) {
+      const when = Date.parse(files[path].last);
+      most = Math.max(most, files[path].commits); oldest = Math.min(oldest, when); newest = Math.max(newest, when);
+    }
+    // History is shown as brightness: the busiest or most recent files are white, the rest fade.
+    const grey = t => { const v = Math.round(72 + 183 * t); return `rgb(${v},${v},${v})`; };
+    for (const n of nodes) {
+      const past = files[n.source_file];
+      if (S.colorBy === 'kind') n.color = FAMILY_COLOR[n.family] || '#d5d8dd';
+      else if (S.colorBy === 'commits') n.color = past ? grey(Math.log(1 + past.commits) / Math.log(1 + most)) : '#2b2d30';
+      else if (S.colorBy === 'recency')
+        n.color = past ? grey(newest > oldest ? (Date.parse(past.last) - oldest) / (newest - oldest) : 1) : '#2b2d30';
+      else n.color = communityColor(n.community);
+    }
+    dirty = true;
+  }
+
+  // ---- layout: start each community in its own spot, then relax with a force simulation
+  function scatter() {
+    seed = 42;
+    const groups = new Map();
+    for (const n of nodes) {
+      const key = n.community == null ? -1 : n.community;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(n);
+    }
+    const ring = 40 * Math.sqrt(nodes.length) + 80;
+    let slot = 0;
+    for (const members of groups.values()) {
+      const angle = slot++ / groups.size * Math.PI * 2, spread = 14 * Math.sqrt(members.length) + 10;
+      for (const n of members) {
+        n.x = Math.cos(angle) * ring + (rand() - .5) * spread * 2;
+        n.y = Math.sin(angle) * ring + (rand() - .5) * spread * 2;
+        n.vx = n.vy = 0;
+      }
+    }
+  }
+  let repelK = 0, reach2 = 0, dragging = null;
+  function repel(a, b) {
+    let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
+    if (d2 > reach2) return;
+    if (d2 < 1) { dx = rand() - .5; dy = rand() - .5; d2 = 1; }
+    const f = repelK * alpha / d2;
+    a.vx -= dx * f; a.vy -= dy * f; b.vx += dx * f; b.vy += dy * f;
+  }
+  function tick() {
+    const reach = 240 + S.distance * 2 + S.repel * 320;
+    repelK = 40 + S.repel * S.repel * 1600;
+    reach2 = reach * reach;
+    if (active.length <= 600) {
+      for (let i = 0; i < active.length; i++)
+        for (let j = i + 1; j < active.length; j++) repel(active[i], active[j]);
+    } else {  // large graphs: only compare nodes in neighbouring grid cells
+      const grid = new Map();
+      for (const n of active) {
+        const key = Math.floor(n.x / reach) + ',' + Math.floor(n.y / reach);
+        if (!grid.has(key)) grid.set(key, []);
+        grid.get(key).push(n);
+      }
+      for (const [key, list] of grid) {
+        const [gx, gy] = key.split(',').map(Number);
+        for (let dx = 0; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+          if (dx === 0 && dy < 0) continue;
+          const other = dx === 0 && dy === 0 ? list : grid.get((gx + dx) + ',' + (gy + dy));
+          if (!other) continue;
+          for (let i = 0; i < list.length; i++)
+            for (let j = other === list ? i + 1 : 0; j < other.length; j++) repel(list[i], other[j]);
+        }
+      }
+    }
+    const spring = .02 + S.link * .2;
+    for (const e of activeEdges) {
+      const dx = e.t.x - e.s.x, dy = e.t.y - e.s.y, d = Math.hypot(dx, dy) || 1;
+      const hub = Math.sqrt(Math.min(e.s.live, e.t.live) || 1);
+      const f = (d - S.distance) / d * spring * alpha * (.4 + .6 * e.score) / hub;
+      e.s.vx += dx * f; e.s.vy += dy * f; e.t.vx -= dx * f; e.t.vy -= dy * f;
+    }
+    const pull = S.center * .04 * alpha;
+    for (const n of active) {
+      n.vx = (n.vx - n.x * pull) * .82;
+      n.vy = (n.vy - n.y * pull) * .82;
+      if (n === dragging) continue;
+      n.x += n.vx; n.y += n.vy;
+    }
+    alpha *= .99;
+  }
+  function reheat() {
+    alpha = Math.max(alpha, .5);
+    if (still) { for (let i = 0; i < 200; i++) tick(); alpha = 0; }  // no animation was asked for
+    dirty = true;
+  }
+
+  // ---- the camera. The panels float over the canvas, so the part of it that can be
+  // seen is what lies between them; fitting and centring aim at that part.
+  function seen() {
+    const GAP = 12, top = 76;  // the bar and the margins around the slabs, as set in the stylesheet
+    const left = document.body.classList.contains('no-side') ? 0 : $('side').offsetWidth + GAP;
+    const roomy = $('detail').classList.contains('roomy');
+    const right = selected ? Math.min(innerWidth * .92, roomy ? Math.min(840, innerWidth * .6) : 360) + GAP : 0;
+    const width = Math.max(220, canvas.clientWidth - left - right), height = canvas.clientHeight - top;
+    return {left, right, width, height, middle: left + width / 2, centre: top + height / 2};
+  }
+  function glide(x, y, k, instant) {
+    if (instant || still) { view.x = x; view.y = y; view.k = k; aim = null; } else aim = {x, y, k};
+    dirty = true;
+  }
+  function fit(instant) {
+    if (!active.length) return;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const n of active) {
+      x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y); x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y);
+    }
+    const area = seen(), k = Math.min(2.5, area.width / (x1 - x0 + 160), area.height / (y1 - y0 + 160));
+    glide(area.middle - (x0 + x1) / 2 * k, area.centre - (y0 + y1) / 2 * k, k, instant === true);
+  }
+  function zoom(factor, cx, cy, smooth) {
+    const from = aim || view, k = Math.min(10, Math.max(.03, from.k * factor));
+    glide(cx - (cx - from.x) * k / from.k, cy - (cy - from.y) * k / from.k, k, !smooth);
+  }
+  function bringIntoView(n, centre) {
+    const area = seen(), k = centre ? Math.max(view.k, 1) : view.k, sx = n.x * view.k + view.x;
+    if (centre) glide(area.middle - n.x * k, area.centre - n.y * k, k);
+    else if (sx < area.left + 40 || sx > area.left + area.width - 40) glide(area.middle - n.x * k, view.y, k);
+  }
+
+  // ---- drawing
+  function readTheme() {
+    const style = getComputedStyle(document.documentElement);
+    for (const name of ['ink', 'muted', 'edge', 'edge-hi', 'bg', 'accent', 'accent-soft'])
+      theme[name] = style.getPropertyValue('--' + name).trim();
+  }
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = canvas.clientWidth * dpr;
+    canvas.height = canvas.clientHeight * dpr;
+    draw();  // at once: setting the size clears the canvas, and a blank frame would flash
+  }
+  function arrowHead(e) {
+    const dx = e.t.x - e.s.x, dy = e.t.y - e.s.y, d = Math.hypot(dx, dy);
+    if (d < 1) return;
+    const ux = dx / d, uy = dy / d, size = (4 + S.linkWidth * 1.6) / view.k;
+    const tx = e.t.x - ux * (e.t.r + 1.5 / view.k), ty = e.t.y - uy * (e.t.r + 1.5 / view.k);
+    const bx = tx - ux * size, by = ty - uy * size;
+    ctx.moveTo(tx, ty);
+    ctx.lineTo(bx - uy * size * .5, by + ux * size * .5);
+    ctx.lineTo(bx + uy * size * .5, by - ux * size * .5);
+    ctx.closePath();
+  }
+  const widths = new Map();
+  function widthOf(text) {
+    if (!widths.has(text)) widths.set(text, ctx.measureText(text).width);
+    return widths.get(text);
+  }
+  function draw() {
+    const dpr = window.devicePixelRatio || 1, k = view.k, w = canvas.clientWidth, h = canvas.clientHeight;
+    const focus = selected || hover;
+    const near = focus ? new Set(focus.links.map(l => l.other)) : null;
+    const marked = !focus && !lit && gitFocus && gitChanged.size ? gitChanged : null;
+    const faded = n => focus ? n !== focus && !near.has(n) : lit ? !lit.has(n)
+      : !!marked && !marked.has(n) && !gitImpact.has(n);
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    ctx.translate(view.x, view.y);
+    ctx.scale(k, k);
+
+    ctx.lineWidth = .8 * S.linkWidth / k;
+    ctx.strokeStyle = ctx.fillStyle = theme.edge;
+    // Selecting or searching dims the rest, but never so far that the graph seems gone.
+    const dim = selected || lit || marked ? .34 : .5;
+    ctx.globalAlpha = focus || lit || marked ? .5 : 1;
+    ctx.beginPath();
+    for (const e of activeEdges) {
+      if (e.s === focus || e.t === focus) continue;
+      ctx.moveTo(e.s.x, e.s.y); ctx.lineTo(e.t.x, e.t.y);
+    }
+    ctx.stroke();
+    if (S.arrows && k > .3) {
+      ctx.beginPath();
+      for (const e of activeEdges) if (e.s !== focus && e.t !== focus) arrowHead(e);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    if (focus) {
+      ctx.strokeStyle = ctx.fillStyle = theme['edge-hi'];
+      ctx.lineWidth = 1.3 * S.linkWidth / k;
+      for (const e of activeEdges) {
+        if (e.s !== focus && e.t !== focus) continue;
+        ctx.setLineDash(e.confidence === 'EXTRACTED' ? [] : [5 / k, 4 / k]);
+        ctx.beginPath(); ctx.moveTo(e.s.x, e.s.y); ctx.lineTo(e.t.x, e.t.y); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath(); arrowHead(e); ctx.fill();
+      }
+    }
+
+    for (const n of active) {
+      ctx.globalAlpha = faded(n) ? dim : 1;
+      ctx.fillStyle = n.color;
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 6.2832); ctx.fill();
+      ctx.strokeStyle = theme.bg; ctx.lineWidth = 1 / k; ctx.stroke();  // keeps touching nodes apart
+      if (n === selected || (lit && lit.has(n) && !focus)) {
+        ctx.strokeStyle = n === selected ? theme.ink : theme['accent-soft'];
+        ctx.lineWidth = 2 / k;
+        ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 2.5 / k, 0, 6.2832); ctx.stroke();
+      }
+      if (n.doc) {  // a square corner marks the nodes somebody has documented
+        const side = Math.max(3 / k, n.r * .7);
+        ctx.fillStyle = theme.ink;
+        ctx.fillRect(n.x + n.r * .55, n.y - n.r * .55 - side, side, side);
+      }
+      if (gitFocus && (gitChanged.has(n) || gitImpact.has(n))) {
+        const solid = gitChanged.has(n);
+        ctx.strokeStyle = CHANGED; ctx.lineWidth = (solid ? 2 : 1.2) / k;
+        ctx.setLineDash(solid ? [] : [3 / k, 3 / k]);
+        ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 3.5 / k, 0, 6.2832); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // Labels are drawn at a fixed size on screen, most important first, and a label
+    // that would cover one already drawn is left out.
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    const floor = S.labels <= 0 ? Infinity : 18 * (1 - S.labels);
+    const wanted = [];
+    for (const n of active) {
+      const sx = n.x * k + view.x, sy = n.y * k + view.y, sr = n.r * k;
+      if (sx < -200 || sx > w + 20 || sy < -20 || sy > h + 20 || (faded(n) && n !== focus)) continue;
+      const forced = n === focus || n === selected;
+      const related = (near && near.size <= 80 && near.has(n)) || (!focus && lit && lit.size <= 80 && lit.has(n))
+        || (marked && marked.size <= 80 && marked.has(n));
+      if (forced || related || sr >= floor || (!focus && n.rank < 45 * S.labels))
+        wanted.push({n, sx, sy, sr, rank: (forced ? 1e9 : related ? 1e6 : 0) + sr});
+    }
+    wanted.sort((a, b) => b.rank - a.rank);
+    const boxes = [];
+    ctx.font = '12px "Helvetica Neue", Helvetica, Inter, Arial, sans-serif';
+    for (const item of wanted.slice(0, 600)) {
+      const text = item.n.label.length > 40 ? item.n.label.slice(0, 38) + '...' : item.n.label;
+      const x = item.sx + item.sr + 6, box = [x - 3, item.sy - 9, x + widthOf(text) + 3, item.sy + 9];
+      if (item.rank < 1e9 && boxes.some(b => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1])) continue;
+      boxes.push(box);
+      ctx.lineWidth = 3.5; ctx.strokeStyle = theme.bg; ctx.strokeText(text, x, item.sy);
+      ctx.fillStyle = item.rank >= 1e9 ? theme.ink : theme.muted; ctx.fillText(text, x, item.sy);
+    }
+  }
+
+  // ---- pointer
+  let panning = false, moved = 0, last = null;
+  function at(event) {
+    const box = canvas.getBoundingClientRect();
+    const x = (event.clientX - box.left - view.x) / view.k, y = (event.clientY - box.top - view.y) / view.k;
+    for (let i = active.length - 1; i >= 0; i--) {
+      const n = active[i];
+      if (Math.hypot(n.x - x, n.y - y) <= n.r + 4 / view.k) return n;
+    }
+    return null;
+  }
+  canvas.addEventListener('pointerdown', event => {
+    canvas.setPointerCapture(event.pointerId);
+    aim = null;
+    dragging = at(event);
+    panning = !dragging;
+    moved = 0;
+    last = {x: event.clientX, y: event.clientY};
+  });
+  canvas.addEventListener('pointermove', event => {
+    if (!last) {
+      const found = at(event);
+      if (found !== hover) { hover = found; dirty = true; canvas.style.cursor = found ? 'pointer' : 'default'; }
+      return;
+    }
+    const dx = event.clientX - last.x, dy = event.clientY - last.y;
+    moved += Math.abs(dx) + Math.abs(dy);
+    last = {x: event.clientX, y: event.clientY};
+    if (dragging) {
+      dragging.x += dx / view.k; dragging.y += dy / view.k;
+      if (!still) alpha = Math.max(alpha, .15);
+    } else if (panning) {
+      view.x += dx; view.y += dy;
+    }
+    dirty = true;
+  });
+  canvas.addEventListener('pointerup', event => {
+    if (moved < 5) select(at(event));
+    dragging = null; panning = false; last = null;
+  });
+  canvas.addEventListener('pointerleave', () => { if (!last && hover) { hover = null; dirty = true; } });
+  canvas.addEventListener('wheel', event => {
+    event.preventDefault();
+    const box = canvas.getBoundingClientRect();
+    aim = null;
+    zoom(Math.exp(-event.deltaY * .0015), event.clientX - box.left, event.clientY - box.top);
+  }, {passive: false});
+
+  // ---- selection and the detail panel
+  function neighbourhood(root, depth) {
+    const found = new Set([root]);
+    let rim = [root];
+    for (let step = 0; step < depth; step++) {
+      const next = [];
+      for (const n of rim) for (const {other} of n.links) if (!found.has(other)) { found.add(other); next.push(other); }
+      rim = next;
+    }
+    return found;
+  }
+  function select(n, centre) {
+    selected = n;
+    if (!n) hops = 0;
+    const before = local;
+    local = n && hops ? neighbourhood(n, hops) : null;
+    if (local || before) refilter();
+    renderDetail();
+    if (local) setTimeout(fit, still ? 0 : 450);
+    else if (n) bringIntoView(n, centre);
+    dirty = true;
+  }
+  function nodeButton(n, note) {
+    return el('button', {className: 'item', onclick: () => select(n, true)},
+      el('span', {className: 'dot', style: 'background:' + n.color}),
+      el('span', {className: 'grow', textContent: n.label}),
+      el('span', {className: 'tag', textContent: note || kindName(n.kind)}));
+  }
+  const drafts = new Map();  // unsaved text per node, kept while moving around the graph
+  let tab = 'links', tabButtons = {};
+  function draftOf(n) {
+    if (!drafts.has(n.id)) drafts.set(n.id, {});
+    return drafts.get(n.id);
+  }
+  function markTabs(n) {
+    const draft = drafts.get(n.id) || {};
+    const pending = {note: draft.note !== undefined, code: !!draft.source && draft.source.editable && draft.code !== draft.source.text};
+    for (const id in tabButtons) tabButtons[id].textContent = tabButtons[id].dataset.name + (pending[id] ? ` (${TEXT.unsaved})` : '');
+  }
+  function renderDetail() {
+    const panel = $('detail');
+    panel.classList.toggle('open', !!selected);
+    if (!selected) {  // the content stays while the panel slides away
+      stage.style.setProperty('--detail-w', '0px');
+      return;
+    }
+    const n = selected;
+    const tabs = [['links', TEXT.tabLinks, linksTab], ['note', TEXT.tabNote, noteTab]];
+    if (EDIT) tabs.push(['props', TEXT.tabProps, propsTab]);
+    if (EDIT && n.source_file && (n.family === 'code' || n.family === 'notes')) tabs.push(['code', TEXT.tabCode, codeTab]);
+    if (!tabs.some(item => item[0] === tab)) tab = 'links';
+    panel.classList.toggle('roomy', tab === 'note' || tab === 'code');
+    stage.style.setProperty('--detail-w', seen().right + 'px');  // the zoom buttons step aside
+
+    panel.replaceChildren();
+    const facts = el('div', {className: 'facts'}, el('span', {className: 'tag', textContent: kindName(n.kind)}));
+    if (n.community != null) facts.append(el('span', {className: 'tag', textContent: communityLabel.get(n.community)}));
+    if (n.edited) facts.append(el('span', {className: 'tag', textContent: SPANISH ? 'corregido' : 'edited'}));
+    if (gitChanged.has(n)) facts.append(el('span', {className: 'tag', style: `color:${CHANGED};border-color:${CHANGED}`,
+                                               textContent: TEXT[gitChanged.get(n)] || gitChanged.get(n)}));
+    panel.append(
+      el('button', {id: 'close', className: 'btn icon', textContent: '×', title: TEXT.close, onclick: () => select(null)}),
+      el('h2', {textContent: n.label}), facts);
+    if (n.source_file) panel.append(el('p', {className: 'path', textContent: n.source_file + (n.line ? ':' + n.line : '')}));
+    const past = GIT && GIT.files && GIT.files[n.source_file];
+    if (past) panel.append(el('p', {className: 'path',
+      textContent: `${TEXT.lastChange}: ${past.last}, ${past.author}, ${past.commits} commits`, title: past.subject}));
+    if (n.url && /^https?:\/\//i.test(n.url))
+      panel.append(el('p', null, el('a', {href: n.url, target: '_blank', rel: 'noopener noreferrer', textContent: n.url})));
+    for (const key of ['summary', 'note']) if (n[key]) panel.append(el('p', {textContent: n[key]}));
+
+    const bar = el('div', {className: 'tabs'});
+    bar.setAttribute('role', 'tablist');
+    tabButtons = {};
+    for (const [id, name] of tabs) {
+      const button = el('button', {className: 'tab', onclick: () => { tab = id; renderDetail(); bringIntoView(n); }});
+      button.dataset.name = name;
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-selected', String(tab === id));
+      tabButtons[id] = button;
+      bar.append(button);
+    }
+    markTabs(n);
+    panel.append(bar);
+    tabs.find(item => item[0] === tab)[2](panel, n);
+  }
+
+  function linksTab(panel, n) {
+    const choices = el('div', {className: 'buttons'},
+      el('button', {className: 'btn', textContent: TEXT.centerOn, onclick: () => bringIntoView(n, true)}));
+    for (const [depth, name] of [[0, TEXT.all], [1, TEXT.hop1], [2, TEXT.hop2]]) {
+      const button = el('button', {className: 'btn', textContent: name, onclick: () => { hops = depth; select(n); }});
+      button.setAttribute('aria-pressed', String(hops === depth));
+      choices.append(button);
+    }
+    panel.append(el('h3', {textContent: TEXT.view}), choices);
+    const byRelation = new Map();
+    for (const item of n.links) {
+      const key = (item.out ? '→ ' : '← ') + item.link.relation.replace(/_/g, ' ');
+      if (!byRelation.has(key)) byRelation.set(key, []);
+      byRelation.get(key).push(item);
+    }
+    for (const [relation, items] of [...byRelation].sort((a, b) => a[0].slice(2).localeCompare(b[0].slice(2)))) {
+      panel.append(el('h3', {textContent: `${relation}  ${items.length}`}));
+      const list = el('ul');
+      for (const {other, link} of items.slice(0, 100))
+        list.append(el('li', null, nodeButton(other, link.confidence === 'EXTRACTED' ? '' : link.confidence.toLowerCase())));
+      panel.append(list);
+    }
+    panel.append(el('p', {className: 'muted', style: 'margin-top:16px', textContent: TEXT.solid}));
+  }
+
+  // ---- editing: a note per node, its properties, and the file it comes from
+  async function api(method, path, body) {
+    const response = await fetch(path, {
+      method, headers: {'Content-Type': 'application/json', 'X-LinkedNodes-Token': EDIT.token},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const reply = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(reply.error || response.statusText);
+    return reply;
+  }
+  const action = (name, run, primary) => el('button', {className: primary ? 'btn primary' : 'btn', textContent: name, onclick: run});
+  function saveKey(area, run) {
+    area.addEventListener('keydown', event => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); run(); }
+    });
+  }
+  function report(status, text, bad) {
+    status.textContent = text;
+    status.className = bad ? 'status bad' : 'status';
+  }
+
+  function inline(parent, text) {
+    const pattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\s][^*]*\*|\[[^\]]+\]\(https?:\/\/[^)\s]+\))/g;
+    let from = 0, match;
+    while ((match = pattern.exec(text))) {
+      if (match.index > from) parent.append(text.slice(from, match.index));
+      const token = match[0];
+      if (token[0] === '`') parent.append(el('code', {textContent: token.slice(1, -1)}));
+      else if (token.startsWith('**')) parent.append(el('strong', {textContent: token.slice(2, -2)}));
+      else if (token[0] === '*') parent.append(el('em', {textContent: token.slice(1, -1)}));
+      else {
+        const parts = token.match(/^\[([^\]]+)\]\((.+)\)$/);
+        parent.append(el('a', {href: parts[2], target: '_blank', rel: 'noopener noreferrer', textContent: parts[1]}));
+      }
+      from = pattern.lastIndex;
+    }
+    if (from < text.length) parent.append(text.slice(from));
+  }
+  function markdown(text) {  // a small, safe subset: headings, lists, code, emphasis, links
+    const root = el('div', {className: 'md'});
+    let list = null, lines = [], code = null;
+    const flush = () => {
+      if (lines.length) { const p = el('p'); inline(p, lines.join(' ')); root.append(p); lines = []; }
+    };
+    for (const line of text.split('\n')) {
+      const fence = line.trim().startsWith('```');
+      if (code) {
+        if (fence) { root.append(el('pre', null, el('code', {textContent: code.join('\n')}))); code = null; }
+        else code.push(line);
+        continue;
+      }
+      const heading = line.match(/^(#{1,4})\s+(.*)$/), item = line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)$/);
+      if (fence) { flush(); list = null; code = []; }
+      else if (heading) {
+        flush(); list = null;
+        const h = el(heading[1].length === 1 ? 'h3' : 'h4');
+        inline(h, heading[2]);
+        root.append(h);
+      } else if (item) {
+        flush();
+        if (!list) { list = el(/^\s*\d/.test(line) ? 'ol' : 'ul'); root.append(list); }
+        const entry = el('li');
+        inline(entry, item[1]);
+        list.append(entry);
+      } else if (!line.trim()) { flush(); list = null; }
+      else { list = null; lines.push(line.trim()); }
+    }
+    if (code) root.append(el('pre', null, el('code', {textContent: code.join('\n')})));
+    flush();
+    return root;
+  }
+
+  function noteTab(panel, n) {
+    const draft = drafts.get(n.id) || {};
+    if (EDIT && draft.note !== undefined) {
+      const area = el('textarea', {value: draft.note, placeholder: TEXT.notePlaceholder});
+      const status = el('p', {className: 'status'});
+      const save = async () => {
+        report(status, TEXT.saving);
+        try {
+          n.doc = (await api('PUT', '/api/note', {id: n.id, text: area.value})).doc || undefined;
+          delete draft.note;
+          if (notedOnly) refilter();
+          dirty = true;
+          renderDetail();
+        } catch (error) { report(status, error.message, true); }
+      };
+      area.addEventListener('input', () => { draft.note = area.value; });
+      saveKey(area, save);
+      panel.append(area, el('div', {className: 'buttons'}, action(TEXT.save, save, true),
+        action(TEXT.cancel, () => { delete draft.note; renderDetail(); })),
+        status, el('p', {className: 'muted', textContent: TEXT.noteHelp}));
+      area.focus();
+      return;
+    }
+    panel.append(n.doc ? markdown(n.doc) : el('p', {className: 'muted', textContent: TEXT.noNote}));
+    if (EDIT) panel.append(el('div', {className: 'buttons'},
+      action(n.doc ? TEXT.editNote : TEXT.writeNote, () => { draftOf(n).note = n.doc || ''; renderDetail(); }, !n.doc)));
+    else panel.append(el('p', {className: 'muted', style: 'margin-top:14px', textContent: TEXT.readOnly}));
+  }
+
+  function propsTab(panel, n) {
+    const fields = {};
+    for (const [key, name] of [['label', TEXT.propLabel], ['kind', TEXT.propKind], ['summary', TEXT.propSummary]]) {
+      const input = key === 'summary' ? el('textarea', {value: n[key] || ''}) : el('input', {className: 'field', value: n[key] || ''});
+      if (key === 'summary') input.style.minHeight = '130px';
+      if (key === 'kind') input.setAttribute('list', 'kind-options');
+      fields[key] = input;
+      panel.append(el('label', {className: 'stack'}, el('span', {textContent: name}), input));
+    }
+    const status = el('p', {className: 'status'});
+    const save = async () => {
+      const body = {id: n.id};
+      for (const key in fields) {
+        const value = fields[key].value.trim();
+        // Only what was changed is stored, so an untouched field keeps following the project.
+        if (value !== (n[key] || '') || (n.edited || []).includes(key)) body[key] = value;
+      }
+      report(status, TEXT.saving);
+      try {
+        const fresh = (await api('PUT', '/api/props', body)).node;
+        for (const key of ['label', 'kind', 'summary', 'edited', 'family']) n[key] = fresh[key];
+        n.key = fold(n.label);
+        recolor();
+        renderDetail();
+      } catch (error) { report(status, error.message, true); }
+    };
+    panel.append(el('div', {className: 'buttons'}, action(TEXT.save, save, true)), status,
+      el('p', {className: 'muted', textContent: TEXT.propsHelp}));
+  }
+
+  // ---- code colouring: one small tokenizer shared by every language the scanner reads
+  const words = text => new Set(text.split(' '));
+  const FLOW = 'if else for while do switch case default break continue return throw try catch finally';
+  const LANGS = {
+    ts: {slash: 1, block: 1, tick: 1, sq: 1,
+         control: words(FLOW + ' await yield import export from as'),
+         keywords: words('const let var function class extends new typeof instanceof in of void delete async static get set this super null undefined true false interface type enum implements namespace declare readonly public private protected abstract keyof infer is satisfies'),
+         types: words('string number boolean any unknown never object symbol bigint')},
+    py: {hash: 1, triple: 1, sq: 1,
+         control: words('if elif else for while break continue return try except finally raise with as import from pass yield await assert'),
+         keywords: words('def class lambda and or not in is None True False global nonlocal del async self cls'),
+         types: words('int str float bool list dict set tuple bytes object')},
+    go: {slash: 1, block: 1, tick: 1, sq: 1,
+         control: words('if else for range switch case default break continue return go defer select fallthrough goto import package'),
+         keywords: words('func var const type struct interface map chan nil true false'),
+         types: words('string int int8 int16 int32 int64 uint uint8 uint16 uint32 uint64 bool error byte rune float32 float64 any')},
+    rs: {slash: 1, block: 1,
+         control: words('if else for while loop match break continue return use mod as in await'),
+         keywords: words('fn let mut const static struct enum trait impl pub crate self Self super where async move dyn ref type unsafe true false'),
+         types: words('i8 i16 i32 i64 i128 isize u8 u16 u32 u64 u128 usize f32 f64 bool char str String Vec Option Result Box')},
+    java: {slash: 1, block: 1, sq: 1,
+           control: words(FLOW + ' import package using namespace await yield foreach in'),
+           keywords: words('class interface enum record struct extends implements new public private protected internal static final abstract virtual override sealed partial readonly void this super base null true false var async synchronized get set'),
+           types: words('int long double float bool boolean char byte string short decimal object String')},
+    rb: {hash: 1, sq: 1,
+         control: words('if elsif else unless while until for in do end return begin rescue ensure raise yield next break case when then require require_relative'),
+         keywords: words('def class module self nil true false and or not attr_accessor attr_reader attr_writer new'),
+         types: words('')},
+    php: {slash: 1, hash: 1, block: 1, sq: 1,
+          control: words(FLOW + ' elseif foreach use namespace require include echo as'),
+          keywords: words('function class interface trait extends implements new public private protected static abstract final const null true false fn'),
+          types: words('int float bool string array object mixed void')},
+  };
+  const BY_EXT = {ts: 'ts', tsx: 'ts', js: 'ts', jsx: 'ts', mjs: 'ts', cjs: 'ts', py: 'py', go: 'go', rs: 'rs',
+                  java: 'java', cs: 'java', rb: 'rb', php: 'php'};
+  const LANG_NAME = {ts: 'TypeScript', tsx: 'TypeScript JSX', js: 'JavaScript', jsx: 'JavaScript JSX', mjs: 'JavaScript',
+                     cjs: 'JavaScript', py: 'Python', go: 'Go', rs: 'Rust', java: 'Java', cs: 'C#', rb: 'Ruby', php: 'PHP',
+                     md: 'Markdown', markdown: 'Markdown', mdx: 'MDX', rst: 'reStructuredText', org: 'Org'};
+  function grammar(lang) {
+    if (lang.re) return lang;
+    const parts = [];
+    if (lang.block) parts.push(['c', /\/\*[\s\S]*?(?:\*\/|$)/]);
+    if (lang.slash) parts.push(['c', /\/\/[^\n]*/]);
+    if (lang.hash) parts.push(['c', /#[^\n]*/]);
+    if (lang.triple) parts.push(['s', /"""[\s\S]*?(?:"""|$)|'''[\s\S]*?(?:'''|$)/]);
+    parts.push(['s', /"(?:\\.|[^"\\\n])*"?/]);
+    if (lang.sq) parts.push(['s', /'(?:\\.|[^'\\\n])*'?/]);
+    if (lang.tick) parts.push(['s', /`(?:\\[\s\S]|[^`\\])*`?/]);
+    parts.push(['f', /@[A-Za-z_][\w.]*/], ['n', /\b(?:0[xX][\da-fA-F_]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/],
+               ['i', /[A-Za-z_$][\w$]*/]);
+    lang.kinds = parts.map(part => part[0]);
+    lang.re = new RegExp(parts.map(part => `(${part[1].source})`).join('|'), 'g');
+    return lang;
+  }
+  function paintCode(text, lang, tags) {
+    const {re, kinds} = grammar(lang);
+    let html = '', from = 0;
+    re.lastIndex = 0;
+    for (let m; (m = re.exec(text));) {
+      if (m.index > from) html += esc(text.slice(from, m.index));
+      let kind = kinds[m.findIndex((group, index) => index > 0 && group !== undefined) - 1];
+      if (kind === 'i') {
+        const word = m[0], prev = text[m.index - 1];
+        if (lang.control.has(word)) kind = 'k2';
+        else if (lang.keywords.has(word)) kind = 'k';
+        else if (lang.types.has(word)) kind = 't';
+        else if (tags && (prev === '<' || (prev === '/' && text[m.index - 2] === '<'))) kind = /^[a-z]/.test(word) ? 'k' : 't';
+        else if (/^\s*\(/.test(text.slice(re.lastIndex, re.lastIndex + 3))) kind = 'f';
+        else if (/^[A-Z][A-Z0-9_]+$/.test(word)) kind = 'o';
+        else if (/^[A-Z]/.test(word)) kind = 't';
+        else kind = 'v';
+      }
+      html += `<span class="${kind}">${esc(m[0])}</span>`;
+      from = re.lastIndex;
+    }
+    return html + esc(text.slice(from));
+  }
+  function paintMarkdown(text) {
+    let fenced = false;
+    return text.split('\n').map(line => {
+      const fence = line.trim().startsWith('```');
+      if (fence) fenced = !fenced;
+      if (fence || fenced) return `<span class="s">${esc(line)}</span>`;
+      if (/^#{1,6}\s/.test(line)) return `<span class="h">${esc(line)}</span>`;
+      return esc(line).replace(/`[^`]+`/g, '<span class="s">$&</span>')
+        .replace(/\*\*[^*]+\*\*/g, '<span class="o">$&</span>')
+        .replace(/^(\s*)([-*]|\d+\.)(?=\s)/, '$1<span class="k2">$2</span>')
+        .replace(/\[[^\]]+\]\([^)]*\)/g, '<span class="v">$&</span>');
+    }).join('\n');
+  }
+  function paintSource(text, ext) {
+    if (text.length > 400000) return esc(text);  // colouring a huge file on every key is too slow
+    if (BY_EXT[ext]) return paintCode(text, LANGS[BY_EXT[ext]], ext === 'tsx' || ext === 'jsx');
+    return LANG_NAME[ext] ? paintMarkdown(text) : esc(text);
+  }
+  function paintDiff(patch) {
+    return patch.split('\n').map(line => {
+      const kind = line.startsWith('@@') ? 'hunk' : /^(\+\+\+|---|diff |index )/.test(line) ? 'meta'
+        : line[0] === '+' ? 'add' : line[0] === '-' ? 'del' : '';
+      return `<span class="${kind}">${esc(line) || ' '}</span>`;
+    }).join('');
+  }
+  function insert(area, text, start = area.selectionStart, end = area.selectionEnd) {
+    area.setSelectionRange(start, end);
+    // execCommand keeps the browser's undo history; setRangeText is the fallback.
+    if (!document.execCommand || !document.execCommand('insertText', false, text)) {
+      area.setRangeText(text, start, end, 'end');
+      area.dispatchEvent(new Event('input'));
+    }
+  }
+
+  function codeTab(panel, n) {
+    const draft = draftOf(n), status = el('p', {className: 'status'});
+    if (!draft.source) {
+      report(status, TEXT.loading);
+      panel.append(status);
+      api('GET', '/api/node?id=' + encodeURIComponent(n.id)).then(reply => {
+        draft.source = reply.source || {editable: false, reason: TEXT.noSource};
+        draft.code = draft.source.text;
+        if (selected === n && tab === 'code') renderDetail();
+      }).catch(error => report(status, error.message, true));
+      return;
+    }
+    const source = draft.source;
+    if (!source.editable) { panel.append(el('p', {className: 'muted', textContent: source.reason})); return; }
+
+    const LINE = 20, PAD = 8, ext = source.path.split('.').pop().toLowerCase(), parts = source.path.split('/');
+    const light = el('span', {className: 'ide-dot'});
+    const crumbs = el('div', {className: 'ide-crumbs', textContent: parts.join('  ›  ')});
+    if (n.kind !== 'file' && n.kind !== 'doc') crumbs.append('  ›  ', el('b', {textContent: n.label}));
+    const gutter = el('pre', {className: 'ide-gutter'}), layer = el('pre', {className: 'ide-paint'});
+    const area = el('textarea', {className: 'ide-text', value: draft.code, spellcheck: false});
+    area.setAttribute('wrap', 'off');
+    area.setAttribute('aria-label', source.path);
+    const band = el('div', {className: 'ide-band'}), mark = el('div', {className: 'ide-mark'});
+    const changes = el('div', {className: 'ide-changes'}), badge = el('span', {className: 'ide-git'});
+    const where = el('span');
+    const comparing = !!draft.diff && !!source.git && !!source.git.patch;
+    const body = comparing ? el('pre', {className: 'ide-diff', innerHTML: paintDiff(source.git.patch)})
+      : el('div', {className: 'ide-body'}, band, mark, changes, gutter, el('div', {className: 'ide-wrap'}, layer, area));
+    panel.append(el('div', {className: 'ide'},
+      el('div', {className: 'ide-tabs'}, el('div', {className: 'ide-tab'},
+        el('span', {className: 'ide-lang', textContent: ext.slice(0, 3).toUpperCase()}),
+        el('span', {textContent: parts[parts.length - 1]}), badge, light)),
+      crumbs,
+      body,
+      el('div', {className: 'ide-status'}, where, el('span', {className: 'grow'}), el('span', {textContent: TEXT.spaces}),
+        el('span', {textContent: 'UTF-8'}), el('span', {textContent: source.eol || 'LF'}),
+        el('span', {textContent: LANG_NAME[ext] || TEXT.plain}))));
+
+    let queued = false, lineCount = 0;
+    const place = () => {  // where the caret is, and where the highlighted lines sit
+      const before = area.value.slice(0, area.selectionStart), line = before.split('\n').length;
+      where.textContent = `${TEXT.line} ${line}, ${TEXT.column} ${before.length - before.lastIndexOf('\n')}`;
+      band.style.transform = `translateY(${PAD + (line - 1) * LINE - area.scrollTop}px)`;
+      mark.style.transform = `translateY(${PAD + ((source.line || 1) - 1) * LINE - area.scrollTop}px)`;
+      changes.style.transform = `translateY(${-area.scrollTop}px)`;
+    };
+    const compare = action(comparing ? TEXT.hideDiff : TEXT.showDiff, () => { draft.diff = !comparing; renderDetail(); });
+    const showGit = () => {  // the letter on the tab and a bar beside every line that differs from the commit
+      const state = source.git || {};
+      badge.textContent = {modified: 'M', added: 'A', untracked: 'U', deleted: 'D'}[state.status] || '';
+      badge.title = TEXT[state.status] || '';
+      badge.style.color = state.status === 'modified' ? '#e2c08d' : '#73c991';
+      changes.replaceChildren(...(state.ranges || []).map(([first, last]) =>
+        el('i', {style: `top:${PAD + (first - 1) * LINE}px;height:${(last - first + 1) * LINE}px`})));
+      compare.hidden = !state.patch;
+    };
+    const repaint = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        const text = area.value, count = text.split('\n').length;
+        layer.innerHTML = paintSource(text, ext) + '\n';
+        if (count !== lineCount) {
+          lineCount = count;
+          gutter.textContent = Array.from({length: count}, (_, i) => i + 1).join('\n');
+        }
+        light.className = text === source.text ? 'ide-dot' : 'ide-dot on';
+        layer.scrollTop = gutter.scrollTop = area.scrollTop;
+        layer.scrollLeft = area.scrollLeft;
+      });
+    };
+    const save = async () => {
+      report(status, TEXT.saving);
+      try {
+        const reply = await api('PUT', '/api/source', {id: n.id, text: area.value, hash: source.hash});
+        source.hash = reply.hash;
+        source.git = reply.git;
+        source.text = draft.code = area.value;
+        showGit();
+        light.className = 'ide-dot';
+        markTabs(n);
+        report(status, TEXT.savedCode);
+        refreshGit();
+      } catch (error) { report(status, error.message, true); }
+    };
+    const rebuild = async () => {
+      report(status, TEXT.rebuilding);
+      try { await api('POST', '/api/rebuild', {}); drafts.clear(); location.reload(); }
+      catch (error) { report(status, error.message, true); }
+    };
+    area.addEventListener('input', () => { draft.code = area.value; repaint(); place(); markTabs(n); });
+    area.addEventListener('scroll', () => {
+      layer.scrollTop = gutter.scrollTop = draft.scroll = area.scrollTop;
+      layer.scrollLeft = area.scrollLeft;
+      place();
+    });
+    for (const name of ['keyup', 'click', 'focus', 'select']) area.addEventListener(name, place);
+    area.addEventListener('keydown', event => {
+      const value = area.value, a = area.selectionStart, b = area.selectionEnd;
+      const lineStart = value.lastIndexOf('\n', a - 1) + 1;
+      if (event.key === 'Tab') {
+        event.preventDefault();
+        if (a === b && !event.shiftKey) return insert(area, '  ');
+        let lineEnd = value.indexOf('\n', b);
+        if (lineEnd < 0) lineEnd = value.length;
+        const next = value.slice(lineStart, lineEnd).split('\n')
+          .map(line => event.shiftKey ? line.replace(/^( {1,2}|\t)/, '') : '  ' + line).join('\n');
+        insert(area, next, lineStart, lineEnd);
+        area.setSelectionRange(lineStart, lineStart + next.length);
+      } else if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey) {  // keep the indentation
+        event.preventDefault();
+        const head = value.slice(lineStart, a), opens = (ext === 'py' ? /[{(\[:]\s*$/ : /[{(\[]\s*$/).test(head);
+        insert(area, '\n' + head.match(/^[ \t]*/)[0] + (opens ? '  ' : ''));
+      }
+    });
+    saveKey(area, save);
+    panel.append(el('div', {className: 'buttons'}, action(TEXT.save, save, true),
+      action(TEXT.revert, () => { drafts.delete(n.id); renderDetail(); }), action(TEXT.rebuild, rebuild), compare), status);
+    showGit();
+    if (comparing) report(status, TEXT.diffNote);
+    repaint();
+    if (draft.scroll === undefined) {  // first time here: put the caret on the node's own line
+      const start = draft.code.split('\n').slice(0, (source.line || 1) - 1).join('\n').length;
+      area.setSelectionRange(start && start + 1, start && start + 1);
+    }
+    requestAnimationFrame(() => {  // open at that line, or where the reader left off
+      area.scrollTop = draft.scroll ?? Math.max(0, ((source.line || 1) - 4) * LINE);
+      place();
+    });
+  }
+  window.addEventListener('beforeunload', event => {
+    for (const draft of drafts.values())
+      if (draft.note !== undefined || (draft.source && draft.source.editable && draft.code !== draft.source.text)) {
+        event.preventDefault(); event.returnValue = ''; return;
+      }
+  });
+
+  // ---- git: what changed, what uses it, and the history behind each file
+  const gitStatus = el('p', {className: 'status'});
+  function applyGit(state) {
+    if (state) GIT = Object.assign({}, GIT, state);  // the history from the build is kept
+    gitChanged.clear();
+    gitImpact.clear();
+    for (const id in (GIT && GIT.nodes) || {}) if (byId.has(id)) gitChanged.set(byId.get(id), GIT.nodes[id]);
+    for (const n of gitChanged.keys())
+      for (const {other, link, out} of n.links)
+        if (!out && !gitChanged.has(other) && !CONTAINS.has(link.relation)) gitImpact.add(other);
+    renderGit();
+    if (selected) renderDetail();
+    dirty = true;
+  }
+  async function refreshGit(base) {
+    if (!EDIT) return;
+    try {
+      const reply = await api('GET', '/api/git?base=' + encodeURIComponent(base || (GIT && GIT.base) || 'HEAD'));
+      report(gitStatus, '');
+      if (reply.git) applyGit(reply.git);
+    } catch (error) { report(gitStatus, error.message, true); }
+  }
+  function renderGit() {
+    const box = $('git');
+    box.parentElement.hidden = !GIT;
+    if (!GIT) return;
+    box.replaceChildren(el('p', {className: 'muted', textContent: `${TEXT.branch} ${GIT.branch || '?'}, commit ${GIT.head || '?'}`}));
+    if (EDIT) {
+      const base = el('input', {className: 'field', value: GIT.base || 'HEAD', spellcheck: false});
+      const go = () => refreshGit(base.value.trim() || 'HEAD');
+      base.addEventListener('keydown', event => { if (event.key === 'Enter') go(); });
+      box.append(el('label', {className: 'stack'}, el('span', {textContent: TEXT.compareWith}), base),
+        el('div', {className: 'buttons'}, action(TEXT.refresh, go)), gitStatus);
+    } else box.append(el('p', {className: 'muted', textContent: TEXT.asBuilt}));
+    const files = Object.keys(GIT.changed || {}).length;
+    box.append(el('p', {textContent: files ? `${number(files)} ${TEXT.changedFiles}, ${number(gitChanged.size)} ${TEXT.nodes}`
+                                           : `${TEXT.noChanges} ${GIT.base || 'HEAD'}`}));
+    if (!gitChanged.size) return;
+    const check = el('input', {type: 'checkbox', checked: gitFocus});
+    check.addEventListener('change', () => { gitFocus = check.checked; dirty = true; });
+    box.append(el('label', {className: 'check'}, check, el('span', {textContent: TEXT.highlight})),
+      el('p', {className: 'muted', style: 'margin-top:6px', textContent: TEXT.legendGit}));
+    const list = el('ul');
+    const whole = [...gitChanged].filter(item => ['file', 'doc', 'image'].includes(item[0].kind))
+      .sort((a, b) => a[0].label.localeCompare(b[0].label));
+    for (const [n, state] of whole.slice(0, 40)) list.append(el('li', null, nodeButton(n, TEXT[state] || state)));
+    box.append(list);
+  }
+
+  // ---- search, in the top bar
+  const search = $('search'), results = $('results');
+  let found = [], cursor = 0;
+  function runSearch() {
+    const needle = fold(search.value.trim());
+    results.replaceChildren();
+    found = []; cursor = 0;
+    results.hidden = !needle;
+    if (!needle) { lit = null; dirty = true; return; }
+    const scored = [];
+    for (const n of nodes) {
+      const score = n.key === needle ? 4 : n.key.startsWith(needle) ? 3 : n.key.includes(needle) ? 2
+        : n.where.includes(needle) ? 1 : 0;
+      if (score) scored.push([score, n]);
+    }
+    scored.sort((a, b) => b[0] - a[0] || (b[1].degree || 0) - (a[1].degree || 0));
+    lit = new Set(scored.filter(item => item[0] > 1).map(item => item[1]));
+    found = scored.slice(0, 14).map(item => item[1]);
+    found.forEach((n, index) => results.append(el('li', {className: index ? '' : 'on'}, nodeButton(n))));
+    if (!found.length) results.append(el('li', {className: 'muted', style: 'padding:6px', textContent: TEXT.noMatches}));
+    dirty = true;
+  }
+  search.placeholder = TEXT.search;
+  search.setAttribute('aria-label', TEXT.search);
+  search.addEventListener('input', runSearch);
+  search.addEventListener('focus', () => { results.hidden = !search.value.trim(); });
+  search.addEventListener('blur', () => setTimeout(() => { results.hidden = true; }, 180));
+  search.addEventListener('keydown', event => {
+    const rows = results.children;
+    if (event.key === 'Enter' && found[cursor]) { select(found[cursor], true); results.hidden = true; }
+    else if ((event.key === 'ArrowDown' || event.key === 'ArrowUp') && found.length) {
+      event.preventDefault();
+      results.hidden = false;
+      rows[cursor].className = '';
+      cursor = (cursor + (event.key === 'ArrowDown' ? 1 : found.length - 1)) % found.length;
+      rows[cursor].className = 'on';
+    } else if (event.key === 'Escape') { search.value = ''; runSearch(); search.blur(); }
+  });
+  document.addEventListener('keydown', event => {
+    const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(event.target.tagName || '');
+    if (event.key === '/' && !typing) { event.preventDefault(); search.focus(); search.select(); }
+    else if (event.key === 'Escape' && !typing) select(null);
+  });
+
+  // ---- the panel of controls
+  const refreshers = [];
+  function slider(parent, key, min, max, step, changed) {
+    const input = el('input', {type: 'range', min, max, step});
+    const value = el('output');
+    const show = () => {
+      input.value = S[key];
+      input.style.setProperty('--fill', (S[key] - min) / (max - min) * 100 + '%');
+      value.textContent = step < 1 ? Math.round(S[key] * 100) + '%' : S[key];
+    };
+    input.addEventListener('input', () => { S[key] = +input.value; show(); keep(); changed(); });
+    refreshers.push(show);
+    parent.append(el('label', {className: 'row'}, el('span', {textContent: TEXT[key]}), value, input));
+    show();
+  }
+  function toggle(parent, key, changed) {
+    const input = el('input', {type: 'checkbox'});
+    const show = () => { input.checked = S[key]; };
+    input.addEventListener('change', () => { S[key] = input.checked; keep(); changed(); });
+    refreshers.push(show);
+    parent.append(el('label', {className: 'check'}, input, el('span', {textContent: TEXT[key]})));
+    show();
+  }
+  const redraw = () => { dirty = true; };
+
+  for (const [id, key] of [['h-filters', 'filters'], ['h-groups', 'groups'], ['h-git', 'git'], ['h-display', 'display'], ['h-forces', 'forces']])
+    $(id).textContent = TEXT[key];
+
+  const filters = $('filters');
+  filters.append(el('h3', {textContent: TEXT.kinds}));
+  const kinds = new Map();
+  for (const n of nodes) kinds.set(n.kind, (kinds.get(n.kind) || 0) + 1);
+  const kindOptions = el('datalist', {id: 'kind-options'}), kindChips = el('div', {className: 'chips'});
+  filters.append(kindChips);
+  for (const [kind, count] of [...kinds].sort((a, b) => b[1] - a[1])) {
+    const chip = el('button', {className: 'chip', onclick: () => {
+      const on = hiddenKinds.delete(kind);
+      if (!on) hiddenKinds.add(kind);
+      chip.setAttribute('aria-pressed', String(on));
+      refilter();
+    }}, el('span', {textContent: kindName(kind)}), el('span', {className: 'count', textContent: number(count)}));
+    chip.setAttribute('aria-pressed', 'true');
+    kindChips.append(chip);
+    kindOptions.append(el('option', {value: kind}));
+  }
+  slider(filters, 'minDegree', 0, 12, 1, refilter);
+  toggle(filters, 'inferred', refilter);
+  const noted = el('input', {type: 'checkbox'});
+  noted.addEventListener('change', () => { notedOnly = noted.checked; refilter(); });
+  filters.append(el('label', {className: 'check'}, noted, el('span', {textContent: TEXT.notedOnly})), kindOptions);
+
+  const groups = $('groups');
+  const colorBy = el('select', null, el('option', {value: 'community', textContent: TEXT.byCommunity}),
+    el('option', {value: 'kind', textContent: TEXT.byKind}));
+  if (GIT && GIT.files && Object.keys(GIT.files).length)
+    colorBy.append(el('option', {value: 'commits', textContent: TEXT.byCommits}),
+      el('option', {value: 'recency', textContent: TEXT.byRecency}));
+  else if (S.colorBy === 'commits' || S.colorBy === 'recency') S.colorBy = 'community';
+  colorBy.addEventListener('change', () => { S.colorBy = colorBy.value; keep(); recolor(); });
+  refreshers.push(() => { colorBy.value = S.colorBy; });
+  colorBy.value = S.colorBy;
+  groups.append(el('label', {className: 'check'}, el('span', {textContent: TEXT.colorBy}), colorBy),
+    el('h3', {textContent: TEXT.communities}));
+  const communityList = el('ul');
+  for (const c of DATA.communities) {
+    const button = el('button', {className: 'item', onclick: () => {
+      isolated = isolated === c.id ? null : c.id;
+      for (const other of communityList.querySelectorAll('button'))
+        other.setAttribute('aria-pressed', String(other === button && isolated != null));
+      refilter();
+      setTimeout(fit, still ? 0 : 450);
+    }}, el('span', {className: 'dot', style: 'background:' + communityColor(c.id)}),
+       el('span', {className: 'grow', textContent: c.label}),
+       el('span', {className: 'count', textContent: number(c.size)}));
+    button.setAttribute('aria-pressed', 'false');
+    communityList.append(el('li', null, button));
+  }
+  groups.append(communityList);
+
+  const display = $('display');
+  slider(display, 'labels', 0, 1, .01, redraw);
+  slider(display, 'nodeSize', .3, 3, .01, resizeNodes);
+  slider(display, 'linkWidth', .2, 4, .01, redraw);
+  toggle(display, 'arrows', redraw);
+
+  const forces = $('forces');
+  slider(forces, 'center', 0, 1, .01, reheat);
+  slider(forces, 'repel', 0, 1, .01, reheat);
+  slider(forces, 'link', 0, 1, .01, reheat);
+  slider(forces, 'distance', 20, 300, 1, reheat);
+  forces.append(el('div', {className: 'buttons'},
+    el('button', {className: 'btn', textContent: TEXT.relayout, onclick: () => {
+      scatter(); alpha = 1; reheat(); setTimeout(fit, still ? 0 : 900);
+    }}),
+    el('button', {className: 'btn', textContent: TEXT.reset, onclick: () => {
+      Object.assign(S, DEFAULTS); keep();
+      for (const show of refreshers) show();
+      resizeNodes(); recolor(); refilter();
+    }})));
+
+  const menu = $('menu');
+  menu.title = TEXT.panel;
+  menu.setAttribute('aria-label', TEXT.panel);
+  menu.addEventListener('click', () => {
+    // The graph slides along with the panel, so what was in view stays in view.
+    const before = seen().middle, from = aim || view;
+    document.body.classList.toggle('no-side');
+    glide(from.x + seen().middle - before, from.y, from.k);
+  });
+  if (innerWidth < 760) document.body.classList.add('no-side');
+  const centreOfView = () => { const area = seen(); return [area.middle, area.centre]; };
+  for (const [glyph, name, run] of [['+', TEXT.zoomIn, () => zoom(1.4, ...centreOfView(), true)],
+                                    ['−', TEXT.zoomOut, () => zoom(1 / 1.4, ...centreOfView(), true)],
+                                    ['⤢', TEXT.fit, () => fit()]]) {
+    const button = el('button', {className: 'btn', textContent: glyph, title: name, onclick: run});
+    button.setAttribute('aria-label', name);
+    $('zoom').append(button);
+  }
+  $('title').textContent = DATA.title;
+  $('hint').textContent = TEXT.hint;
+
+  // ---- start
+  readTheme();
+  resizeNodes();
+  recolor();
+  applyGit();
+  refreshGit();  // with a server behind the page, show the working tree as it is now
+  scatter();
+  refilter();
+  alpha = 1;
+  for (let i = 0; i < (nodes.length > 1500 ? 120 : 300); i++) tick();
+  alpha = still ? 0 : Math.min(alpha, .12);
+  new ResizeObserver(resize).observe(canvas);
+  resize();
+  fit(true);
+  (function frame() {
+    if (alpha > .02) { tick(); dirty = true; }
+    if (aim) {  // ease the camera towards where it was asked to go
+      view.x += (aim.x - view.x) * .2; view.y += (aim.y - view.y) * .2; view.k += (aim.k - view.k) * .2;
+      if (Math.abs(aim.x - view.x) < .5 && Math.abs(aim.y - view.y) < .5 && Math.abs(aim.k - view.k) < .002) {
+        Object.assign(view, aim);
+        aim = null;
+      }
+      dirty = true;
+    }
+    if (dirty) { dirty = false; draw(); }
+    requestAnimationFrame(frame);
+  })();
+})();
+</script>
+</body>
+</html>
