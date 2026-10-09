@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,6 +7,9 @@ name = "linkednodes"
 version = "0.1.0"
 description = "Turn a folder of code, notes, saved links and images into a knowledge graph."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Valentín Torres" }]
 requires-python = ">=3.10"
 dependencies = ["networkx>=3.0"]
 

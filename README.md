@@ -187,3 +187,8 @@ downloaded.
 ```
 python -m unittest discover -s tests
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE). The only runtime dependency, NetworkX, is installed
+separately and is under the BSD 3-Clause license; nothing from it is copied here.
