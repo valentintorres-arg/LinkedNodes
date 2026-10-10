@@ -69,6 +69,9 @@ body.no-side #side { transform: translateX(calc(-100% - 24px)); visibility: hidd
 }
 #detail.open { transform: none; visibility: visible; transition: transform .34s var(--ease), width .34s var(--ease); }
 #detail.roomy { width: min(840px, 60vw); }
+/* Wide, it takes all the room there is: up to the other panel, or to the window's edge when that one is folded away. */
+#detail.wide { width: calc(100vw - max(var(--side-w), var(--gap)) - var(--gap)); max-width: none; display: flex; flex-direction: column; }
+#detail.wide .ide { flex: 1 1 0; height: auto; }
 #zoom {
   position: absolute; right: calc(var(--detail-w) + var(--gap)); bottom: var(--gap); display: flex; flex-direction: column;
   background: var(--panel); transition: right .34s var(--ease);
@@ -199,6 +202,14 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
 .ide-lang { font: 700 9.5px/1 var(--mono); color: #3794ff; letter-spacing: .02em; }
 .ide-dot { width: 8px; height: 8px; border-radius: 50%; }
 .ide-dot.on { background: #c5c5c5; }
+.ide-wide { position: relative; margin-left: auto; width: 34px; height: 34px; padding: 0; border: 0; background: none; cursor: pointer; }
+.ide-wide:hover { background: rgba(255, 255, 255, .1); }
+/* two corners that point outwards, and inwards once the editor is wide */
+.ide-wide::before, .ide-wide::after { content: ""; position: absolute; width: 5px; height: 5px; border: 0 solid #c5c5c5; }
+.ide-wide::before { top: 11px; right: 11px; border-width: 1.5px 1.5px 0 0; }
+.ide-wide::after { bottom: 11px; left: 11px; border-width: 0 0 1.5px 1.5px; }
+.ide-wide[aria-pressed=true]::before { top: 9px; right: 9px; border-width: 0 0 1.5px 1.5px; }
+.ide-wide[aria-pressed=true]::after { bottom: 9px; left: 9px; border-width: 1.5px 1.5px 0 0; }
 .ide-crumbs {
   flex: none; padding: 3px 14px 4px; font: 12px "Segoe UI", system-ui, sans-serif; color: #a0a0a0; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
@@ -239,7 +250,10 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
 .ide .o { color: #4fc1ff; } .ide .h { color: #569cd6; font-weight: 700; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
-@media (max-width: 760px) { #stats, #hint { display: none; } #side { width: min(300px, 80vw); } }
+@media (max-width: 760px) {
+  #stats, #hint { display: none; } #side { width: min(300px, 80vw); }
+  #detail.wide { width: calc(100vw - var(--gap) * 2); }
+}
 </style>
 </head>
 <body>
@@ -306,6 +320,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     savedCode: 'Guardado en disco. El grafo muestra el cambio cuando lo reconstruís.',
     revert: 'Descartar cambios', rebuild: 'Reconstruir el grafo', rebuilding: 'Reconstruyendo...',
     unsaved: 'sin guardar', line: 'Lín', column: 'Col', spaces: 'Espacios: 2', plain: 'Texto',
+    widen: 'Agrandar el editor', narrow: 'Achicar el editor',
     git: 'Git', branch: 'Rama', compareWith: 'Comparar con (commit, rama o etiqueta)', refresh: 'Actualizar',
     noChanges: 'Sin cambios respecto de', changedFiles: 'archivos con cambios', asBuilt: 'Estado de cuando se construyó el grafo.',
     highlight: 'Resaltar los cambios y lo que los usa', byCommits: 'actividad (commits)', byRecency: 'último cambio',
@@ -347,6 +362,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     savedCode: 'Saved to disk. The graph shows the change once you rebuild it.',
     revert: 'Discard changes', rebuild: 'Rebuild the graph', rebuilding: 'Rebuilding...',
     unsaved: 'unsaved', line: 'Ln', column: 'Col', spaces: 'Spaces: 2', plain: 'Plain text',
+    widen: 'Expand the editor', narrow: 'Shrink the editor',
     git: 'Git', branch: 'Branch', compareWith: 'Compare with (commit, branch or tag)', refresh: 'Refresh',
     noChanges: 'No changes from', changedFiles: 'files with changes', asBuilt: 'As it was when the graph was built.',
     highlight: 'Highlight the changes and what uses them', byCommits: 'activity (commits)', byRecency: 'last change',
@@ -596,8 +612,10 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   function seen() {
     const GAP = 12, top = 76 + CHROME;  // the bars and the margins around the slabs, as set in the stylesheet
     const left = document.body.classList.contains('no-side') ? 0 : $('side').offsetWidth + GAP;
-    const roomy = $('detail').classList.contains('roomy');
-    const right = selected || gitView ? Math.min(innerWidth * .92, roomy ? Math.min(840, innerWidth * .6) : 360) + GAP : 0;
+    const detail = $('detail').classList, roomy = detail.contains('roomy');
+    const open = detail.contains('wide') ? innerWidth - left - GAP * 2
+      : Math.min(innerWidth * .92, roomy ? Math.min(840, innerWidth * .6) : 360);
+    const right = selected || gitView ? open + GAP : 0;
     const width = Math.max(220, canvas.clientWidth - left - right), height = canvas.clientHeight - top;
     return {left, right, width, height, middle: left + width / 2, centre: top + height / 2};
   }
@@ -831,6 +849,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   const unsaved = () => [...drafts.values()].some(draft =>
     draft.note !== undefined || (draft.source && draft.source.editable && draft.code !== draft.source.text));
   let tab = 'links', tabButtons = {};
+  let wide = false;  // the code editor over all the room there is, rather than at the panel's width
   function draftOf(n) {
     if (!drafts.has(n.id)) drafts.set(n.id, {});
     return drafts.get(n.id);
@@ -854,6 +873,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     if (EDIT && n.source_file && (n.family === 'code' || n.family === 'notes')) tabs.push(['code', TEXT.tabCode, codeTab]);
     if (!tabs.some(item => item[0] === tab)) tab = 'links';
     panel.classList.toggle('roomy', tab === 'note' || tab === 'code');
+    panel.classList.toggle('wide', wide && tab === 'code');
     stage.style.setProperty('--detail-w', seen().right + 'px');  // the zoom buttons step aside
 
     panel.replaceChildren();
@@ -1182,13 +1202,17 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     const band = el('div', {className: 'ide-band'}), mark = el('div', {className: 'ide-mark'});
     const changes = el('div', {className: 'ide-changes'}), badge = el('span', {className: 'ide-git'});
     const where = el('span');
+    const widen = el('button', {className: 'ide-wide', title: wide ? TEXT.narrow : TEXT.widen,
+                                onclick: () => { wide = !wide; renderDetail(); }});
+    widen.setAttribute('aria-label', widen.title);
+    widen.setAttribute('aria-pressed', String(wide));
     const comparing = !!draft.diff && !!source.git && !!source.git.patch;
     const body = comparing ? el('pre', {className: 'ide-diff', innerHTML: paintDiff(source.git.patch)})
       : el('div', {className: 'ide-body'}, band, mark, changes, gutter, el('div', {className: 'ide-wrap'}, layer, area));
     panel.append(el('div', {className: 'ide'},
       el('div', {className: 'ide-tabs'}, el('div', {className: 'ide-tab'},
         el('span', {className: 'ide-lang', textContent: ext.slice(0, 3).toUpperCase()}),
-        el('span', {textContent: parts[parts.length - 1]}), badge, light)),
+        el('span', {textContent: parts[parts.length - 1]}), badge, light), widen),
       crumbs,
       body,
       el('div', {className: 'ide-status'}, where, el('span', {className: 'grow'}), el('span', {textContent: TEXT.spaces}),
@@ -1488,6 +1512,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   function diffPanel(panel) {
     const what = gitView, facts = el('div', {className: 'facts'}), buttons = el('div', {className: 'buttons'});
     panel.classList.add('roomy');
+    panel.classList.remove('wide');
     stage.style.setProperty('--detail-w', seen().right + 'px');
     panel.replaceChildren(el('button', {id: 'close', className: 'btn icon', textContent: '×', title: TEXT.close, onclick: () => select(null)}));
     if (what.hash) {
@@ -1701,6 +1726,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     // The graph slides along with the panel, so what was in view stays in view.
     const before = seen().middle, from = aim || view;
     menu.setAttribute('aria-expanded', String(!document.body.classList.toggle('no-side')));
+    stage.style.setProperty('--detail-w', seen().right + 'px');  // a wide editor grows into the room the panel left
     glide(from.x + seen().middle - before, from.y, from.k);
   });
   if (innerWidth < 760) document.body.classList.add('no-side');
