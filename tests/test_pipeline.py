@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from linkednodes import annotations, cli, code, desktop, detect, gitinfo, hooks, pipeline, saved, server
+from linkednodes import annotations, cli, code, desktop, detect, gitinfo, gitops, hooks, pipeline, saved, server
 from linkednodes.query import Graph
 
 FILES = {
@@ -249,12 +249,12 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(node["label"], "Order")
         self.assertNotIn("doc", node)
 
-    def test_server_edits_and_refuses(self):
-        self.answer_all()
+    def serve(self):
+        """Start the server on the folder; returns its token and a function that calls it."""
         httpd = server.make_server(self.root)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (httpd.shutdown(), httpd.server_close()))
         port, token = httpd.server_address[1], httpd.app.token
-        target = "code:app/models.py::Order"
 
         def call(method, path, body=None, token=token, host=None):
             request = urllib.request.Request(
@@ -268,36 +268,43 @@ class PipelineTest(unittest.TestCase):
             except urllib.error.HTTPError as error:
                 return error.code, json.loads(error.read())
 
-        try:
-            status, page = call("GET", "/")
-            self.assertEqual(status, 200)
-            self.assertIn(token.encode(), page)
-            # Without the token, or under another site's name, nothing is served.
-            self.assertEqual(call("GET", f"/api/node?id={target}", token="wrong")[0], 403)
-            self.assertEqual(call("GET", "/", host="evil.example")[0], 403)
+        return token, call
 
-            status, reply = call("PUT", "/api/note", {"id": target, "text": "Hecho a mano."})
-            self.assertEqual((status, reply["doc"]), (200, "Hecho a mano."))
-            status, reply = call("PUT", "/api/props", {"id": target, "label": "Pedido"})
-            self.assertEqual((reply["node"]["label"], reply["node"]["family"]), ("Pedido", "code"))
+    def test_server_edits_and_refuses(self):
+        self.answer_all()
+        token, call = self.serve()
+        target = "code:app/models.py::Order"
 
-            source = call("GET", f"/api/node?id={urllib.parse.quote(target)}")[1]["source"]
-            self.assertEqual((source["path"], source["line"], source["editable"]), ("app/models.py", 5, True))
-            edited = source["text"].replace("return 1", "return 2")
-            status, saved = call("PUT", "/api/source", {"id": target, "text": edited, "hash": source["hash"]})
-            self.assertEqual(status, 200)
-            self.assertIn("return 2", (self.root / "app" / "models.py").read_text(encoding="utf-8"))
-            # A second save from the stale copy must not overwrite the first.
-            status, reply = call("PUT", "/api/source", {"id": target, "text": "x", "hash": source["hash"]})
-            self.assertEqual(status, 409)
-            # Images, concepts and files outside the project have no editable source.
-            self.assertIsNone(call("GET", "/api/node?id=img:pic.png")[1]["source"])
-            self.assertEqual(call("PUT", "/api/source", {"id": "img:pic.png", "text": "x", "hash": ""})[0], 403)
-            self.assertEqual(call("GET", "/api/node?id=nope")[0], 404)
-            self.assertEqual(call("POST", "/api/rebuild", {})[1]["pending"], 0)
-        finally:
-            httpd.shutdown()
-            httpd.server_close()
+        status, page = call("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn(token.encode(), page)
+        # Without the token, or under another site's name, nothing is served.
+        self.assertEqual(call("GET", f"/api/node?id={target}", token="wrong")[0], 403)
+        self.assertEqual(call("GET", "/", host="evil.example")[0], 403)
+
+        status, reply = call("PUT", "/api/note", {"id": target, "text": "Hecho a mano."})
+        self.assertEqual((status, reply["doc"]), (200, "Hecho a mano."))
+        status, reply = call("PUT", "/api/props", {"id": target, "label": "Pedido"})
+        self.assertEqual((reply["node"]["label"], reply["node"]["family"]), ("Pedido", "code"))
+
+        source = call("GET", f"/api/node?id={urllib.parse.quote(target)}")[1]["source"]
+        self.assertEqual((source["path"], source["line"], source["editable"]), ("app/models.py", 5, True))
+        edited = source["text"].replace("return 1", "return 2")
+        status, saved = call("PUT", "/api/source", {"id": target, "text": edited, "hash": source["hash"]})
+        self.assertEqual(status, 200)
+        self.assertIn("return 2", (self.root / "app" / "models.py").read_text(encoding="utf-8"))
+        # A second save from the stale copy must not overwrite the first.
+        status, reply = call("PUT", "/api/source", {"id": target, "text": "x", "hash": source["hash"]})
+        self.assertEqual(status, 409)
+        # Images, concepts and files outside the project have no editable source.
+        self.assertIsNone(call("GET", "/api/node?id=img:pic.png")[1]["source"])
+        self.assertEqual(call("PUT", "/api/source", {"id": "img:pic.png", "text": "x", "hash": ""})[0], 403)
+        self.assertEqual(call("GET", "/api/node?id=nope")[0], 404)
+        self.assertEqual(call("POST", "/api/rebuild", {})[1]["pending"], 0)
+        # Outside a repository there is no git to show, to follow or to drive.
+        self.assertEqual(call("GET", "/api/git")[1], {"git": None, "repo": None})
+        self.assertEqual(call("GET", "/api/watch")[1], {"stamp": None})
+        self.assertEqual(call("POST", "/api/repo", {"do": "stage"})[0], 409)
 
     def test_source_keeps_line_endings(self):
         self.answer_all()
@@ -398,6 +405,83 @@ class PipelineTest(unittest.TestCase):
         self.assertFalse(written[1].exists())
         self.assertEqual(hooks.remove(self.root), [])
         self.assertIn("echo mine", written[0].read_text(encoding="utf-8"))
+
+    def test_git_work_from_the_viewer(self):
+        if not shutil.which("git"):
+            self.skipTest("git is not installed")
+        remote, other = tempfile.TemporaryDirectory(), tempfile.TemporaryDirectory()
+        self.addCleanup(lambda: (remote.cleanup(), other.cleanup()))
+
+        def git(*args, at=self.root):
+            subprocess.run(["git", "-C", str(at), "-c", "user.name=Ana", "-c", "user.email=ana@example.com",
+                            "-c", "commit.gpgsign=false", *args], check=True, capture_output=True)
+
+        self.answer_all()
+        git("init", "-q", "--bare", "-b", "main", at=remote.name)
+        git("init", "-q", "-b", "main")
+        for key, value in (("user.name", "Ana"), ("user.email", "ana@example.com"), ("commit.gpgsign", "false")):
+            git("config", key, value)
+        git("remote", "add", "origin", remote.name)
+        git("add", "-A")
+        git("commit", "-q", "-m", "first version")
+        models = self.root / "app" / "models.py"
+        models.write_text(models.read_text(encoding="utf-8").replace("return 1", "return 2"), encoding="utf-8")
+        (self.root / "app" / "extra.py").write_text("def brand_new():\n    return 1\n", encoding="utf-8")
+        token, call = self.serve()
+
+        repo = call("GET", "/api/git")[1]["repo"]
+        self.assertEqual((repo["branch"], repo["upstream"], repo["staged"]), ("main", "", {}))
+        self.assertEqual(repo["unstaged"], {"app/extra.py": "untracked", "app/models.py": "modified"})
+        self.assertEqual([(c["subject"], c["pushed"]) for c in repo["log"]], [("first version", False)])
+        # A file git does not track yet is shown whole; one that is not staged has no staged diff.
+        self.assertIn("+def brand_new():", call("GET", "/api/diff?path=app/extra.py")[1]["patch"])
+        self.assertIn("+        return 2", call("GET", "/api/diff?path=app/models.py")[1]["patch"])
+        self.assertEqual(call("GET", "/api/diff?path=app/models.py&staged=1")[1]["patch"], "")
+
+        # Staging one file and committing it leaves the other where it was.
+        repo = call("POST", "/api/repo", {"do": "stage", "paths": ["app/models.py"]})[1]["repo"]
+        self.assertEqual((repo["staged"], repo["unstaged"]), ({"app/models.py": "modified"}, {"app/extra.py": "untracked"}))
+        self.assertIn("+        return 2", call("GET", "/api/diff?path=app/models.py&staged=1")[1]["patch"])
+        self.assertEqual(call("POST", "/api/repo", {"do": "commit", "message": " "})[0], 409)
+        repo = call("POST", "/api/repo", {"do": "commit", "message": "raise the price"})[1]["repo"]
+        self.assertEqual((repo["staged"], repo["counts"], repo["log"][0]["subject"]),
+                         ({}, {"staged": 0, "unstaged": 1}, "raise the price"))
+        self.assertIn("raise the price", call("GET", f"/api/diff?commit={repo['log'][0]['hash']}")[1]["patch"])
+        repo = call("POST", "/api/repo", {"do": "stage"})[1]["repo"]  # no paths: everything
+        self.assertEqual(repo["staged"], {"app/extra.py": "added"})
+        self.assertEqual(call("POST", "/api/repo", {"do": "unstage"})[1]["repo"]["staged"], {})
+
+        # The first push publishes the branch. After it nothing is ahead and every commit is on the remote.
+        status, reply = call("POST", "/api/repo", {"do": "push"})
+        self.assertEqual((status, reply["repo"]["upstream"], reply["repo"]["ahead"]), (200, "origin/main", 0))
+        self.assertTrue(all(c["pushed"] for c in reply["repo"]["log"]))
+
+        # A new branch, and back. What git refuses, and what is not git's to take, comes back as an error.
+        repo = call("POST", "/api/repo", {"do": "branch", "name": "feature/x"})[1]["repo"]
+        self.assertEqual((repo["branch"], repo["branches"]), ("feature/x", ["feature/x", "main"]))
+        self.assertEqual(call("POST", "/api/repo", {"do": "switch", "name": "main"})[1]["repo"]["branch"], "main")
+        for bad in ({"do": "switch", "name": "--orphan"}, {"do": "switch", "name": "nope"},
+                    {"do": "stage", "paths": ["../outside"]}, {"do": "stage", "paths": "app"}, {"do": "rm"}):
+            self.assertEqual(call("POST", "/api/repo", bad)[0], 409, bad)
+        self.assertEqual(call("GET", "/api/diff?commit=--output%3Dx")[0], 409)
+        self.assertEqual(call("POST", "/api/repo", {"do": "push"}, token="wrong")[0], 403)
+
+        # Somebody else pushes; a fetch shows it and a pull fast-forwards to it.
+        git("clone", "-q", remote.name, other.name, at=remote.name)
+        (Path(other.name) / "elsewhere.txt").write_text("from another desk\n", encoding="utf-8")
+        git("add", "-A", at=other.name)
+        git("commit", "-q", "-m", "from elsewhere", at=other.name)
+        git("push", "-q", at=other.name)
+        self.assertEqual(call("POST", "/api/repo", {"do": "fetch"})[1]["repo"]["behind"], 1)
+        repo = call("POST", "/api/repo", {"do": "pull"})[1]["repo"]
+        self.assertEqual((repo["behind"], repo["log"][0]["subject"]), (0, "from elsewhere"))
+        self.assertTrue((self.root / "elsewhere.txt").exists())
+
+        # The page follows the folder by asking what changed since the state it last saw.
+        stamp = call("GET", "/api/watch")[1]["stamp"]
+        self.assertEqual(gitops.fingerprint(self.root), stamp)
+        threading.Timer(0.3, lambda: models.write_text("# otra vez\n", encoding="utf-8")).start()
+        self.assertNotEqual(call("GET", f"/api/watch?seen={stamp}")[1]["stamp"], stamp)
 
     def test_desktop_window_serves_a_folder(self):
         # The window itself needs a screen; what feeds it does not.

@@ -148,6 +148,20 @@ li + li > .item { box-shadow: inset 0 1px 0 var(--line); }
 .stack > span { display: block; margin-bottom: 6px; color: var(--muted); }
 .status { min-height: 1.45em; margin-top: 8px; color: var(--muted); }
 .status.bad { color: var(--bad); }
+#git .status { white-space: pre-wrap; overflow-wrap: anywhere; }
+.pair { display: flex; align-items: center; gap: 4px; }
+.pair .item, .pair .field { flex: 1; width: auto; min-width: 0; }
+.item[aria-pressed=true] .tag { color: #000; border-color: rgba(0, 0, 0, .3); }
+.btn.small { width: 24px; height: 24px; padding: 0; flex: none; }
+.btn:disabled { opacity: .4; pointer-events: none; }
+h3.split { display: flex; align-items: baseline; gap: 8px; }
+.link {
+  font: inherit; letter-spacing: inherit; text-transform: inherit; color: var(--muted); background: none; border: 0;
+  padding: 0; margin-left: auto; cursor: pointer;
+}
+.link:hover { color: var(--ink); }
+textarea.short { min-height: 64px; height: 64px; }
+#git select { max-width: 190px; }
 
 /* ---- detail panel */
 #close { position: absolute; top: 14px; right: 14px; }
@@ -293,6 +307,15 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     legendGit: 'Anillo naranja: cambió. Anillo punteado: usa algo que cambió.',
     showDiff: 'Ver cambios contra el último commit', hideDiff: 'Volver al editor',
     diffNote: 'Es lo guardado en disco contra el último commit; lo que todavía no guardaste no aparece.',
+    staged: 'Preparado', changes: 'Cambios', stage: 'Preparar', unstage: 'Quitar', stageAll: 'Preparar todo',
+    unstageAll: 'Quitar todo', cleanTree: 'No hay cambios para un commit.', more: 'más', conflict: 'conflicto',
+    commitMessage: 'Mensaje del commit. Ctrl+Enter lo confirma.', commit: 'Commit', committed: 'Commit hecho:',
+    nothingStaged: 'Primero prepará los archivos que van en el commit.', needMessage: 'El commit necesita un mensaje.',
+    push: 'Push', pull: 'Pull', fetch: 'Fetch', publish: 'Publicar la rama', newBranch: 'Rama nueva', create: 'Crear',
+    remoteOnly: 'Solo en el remoto', detached: 'sin rama', recent: 'Últimos commits', notPushed: 'sin subir',
+    working: 'Trabajando...', noDiff: 'No hay diferencias.', openNode: 'Ver en el grafo', inIndex: 'preparado',
+    inTree: 'sin preparar',
+    saveFirst: 'Guardá o descartá lo que tenés sin guardar antes de cambiar lo que hay en disco.',
   } : {
     search: 'Search for a node', noMatches: 'No matches', nodes: 'nodes', edges: 'edges',
     showing: 'shown', mostConnected: 'most connected of', filters: 'Filters', kinds: 'Node kinds',
@@ -325,6 +348,15 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     legendGit: 'Orange ring: changed. Dashed ring: uses something that changed.',
     showDiff: 'See changes since the last commit', hideDiff: 'Back to the editor',
     diffNote: 'This is what is saved on disk against the last commit; unsaved edits are not in it.',
+    staged: 'Staged', changes: 'Changes', stage: 'Stage', unstage: 'Unstage', stageAll: 'Stage all',
+    unstageAll: 'Unstage all', cleanTree: 'Nothing to commit.', more: 'more', conflict: 'conflict',
+    commitMessage: 'Commit message. Ctrl+Enter commits.', commit: 'Commit', committed: 'Committed',
+    nothingStaged: 'Stage the files that go into the commit first.', needMessage: 'A commit needs a message.',
+    push: 'Push', pull: 'Pull', fetch: 'Fetch', publish: 'Publish branch', newBranch: 'New branch', create: 'Create',
+    remoteOnly: 'On the remote only', detached: 'no branch', recent: 'Latest commits', notPushed: 'not pushed',
+    working: 'Working...', noDiff: 'Nothing differs.', openNode: 'Open in the graph', inIndex: 'staged',
+    inTree: 'not staged',
+    saveFirst: 'Save or discard your unsaved edits before changing what is on disk.',
   };
   const KINDS = SPANISH ? {
     file: 'archivo', function: 'función', class: 'clase', method: 'método', type: 'tipo', package: 'paquete',
@@ -392,6 +424,8 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   const CHANGED = '#ffb454', CONTAINS = new Set(['contains', 'in_folder', 'part_of']);
   const gitChanged = new Map(), gitImpact = new Set();
   let GIT = DATA.git || null, gitFocus = false;
+  // With a server behind the page: where the repository stands, and the diff on show beside the graph.
+  let REPO = null, gitView = null;
   const theme = {};
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -515,7 +549,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     const GAP = 12, top = 76;  // the bar and the margins around the slabs, as set in the stylesheet
     const left = document.body.classList.contains('no-side') ? 0 : $('side').offsetWidth + GAP;
     const roomy = $('detail').classList.contains('roomy');
-    const right = selected ? Math.min(innerWidth * .92, roomy ? Math.min(840, innerWidth * .6) : 360) + GAP : 0;
+    const right = selected || gitView ? Math.min(innerWidth * .92, roomy ? Math.min(840, innerWidth * .6) : 360) + GAP : 0;
     const width = Math.max(220, canvas.clientWidth - left - right), height = canvas.clientHeight - top;
     return {left, right, width, height, middle: left + width / 2, centre: top + height / 2};
   }
@@ -726,6 +760,9 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     return found;
   }
   function select(n, centre) {
+    const diffOpen = gitView;
+    gitView = null;  // a node and a diff share the panel
+    if (diffOpen) renderGit();
     selected = n;
     if (!n) hops = 0;
     const before = local;
@@ -743,6 +780,8 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
       el('span', {className: 'tag', textContent: note || kindName(n.kind)}));
   }
   const drafts = new Map();  // unsaved text per node, kept while moving around the graph
+  const unsaved = () => [...drafts.values()].some(draft =>
+    draft.note !== undefined || (draft.source && draft.source.editable && draft.code !== draft.source.text));
   let tab = 'links', tabButtons = {};
   function draftOf(n) {
     if (!drafts.has(n.id)) drafts.set(n.id, {});
@@ -755,11 +794,12 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   }
   function renderDetail() {
     const panel = $('detail');
-    panel.classList.toggle('open', !!selected);
-    if (!selected) {  // the content stays while the panel slides away
+    panel.classList.toggle('open', !!selected || !!gitView);
+    if (!selected && !gitView) {  // the content stays while the panel slides away
       stage.style.setProperty('--detail-w', '0px');
       return;
     }
+    if (!selected) return diffPanel(panel);
     const n = selected;
     const tabs = [['links', TEXT.tabLinks, linksTab], ['note', TEXT.tabNote, noteTab]];
     if (EDIT) tabs.push(['props', TEXT.tabProps, propsTab]);
@@ -1201,16 +1241,14 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     });
   }
   window.addEventListener('beforeunload', event => {
-    for (const draft of drafts.values())
-      if (draft.note !== undefined || (draft.source && draft.source.editable && draft.code !== draft.source.text)) {
-        event.preventDefault(); event.returnValue = ''; return;
-      }
+    if (unsaved()) { event.preventDefault(); event.returnValue = ''; }
   });
 
   // ---- git: what changed, what uses it, and the history behind each file
   const gitStatus = el('p', {className: 'status'});
-  function applyGit(state) {
+  function applyGit(state, repo) {
     if (state) GIT = Object.assign({}, GIT, state);  // the history from the build is kept
+    if (repo !== undefined) REPO = repo;
     gitChanged.clear();
     gitImpact.clear();
     for (const id in (GIT && GIT.nodes) || {}) if (byId.has(id)) gitChanged.set(byId.get(id), GIT.nodes[id]);
@@ -1218,42 +1256,250 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
       for (const {other, link, out} of n.links)
         if (!out && !gitChanged.has(other) && !CONTAINS.has(link.relation)) gitImpact.add(other);
     renderGit();
-    if (selected) renderDetail();
+    // The panel is not drawn again under someone who is typing in it; their text is the newer one.
+    const typing = $('detail').contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+    if ((selected || gitView) && !typing) renderDetail();
     dirty = true;
   }
   async function refreshGit(base) {
-    if (!EDIT) return;
+    if (!EDIT) return false;
     try {
       const reply = await api('GET', '/api/git?base=' + encodeURIComponent(base || (GIT && GIT.base) || 'HEAD'));
-      report(gitStatus, '');
-      if (reply.git) applyGit(reply.git);
-    } catch (error) { report(gitStatus, error.message, true); }
+      if (reply.git) applyGit(reply.git, reply.repo);
+      return true;
+    } catch (error) { report(gitStatus, error.message, true); return false; }
+  }
+
+  // Staging, commits, branches and the remote. Each request goes to git as it is, and what
+  // git answers, refusals included, is shown under the buttons.
+  let gitBusy = false;
+  const tail = text => (text || '').trim().split('\n').slice(-4).join('\n');
+  async function repo(request, said) {
+    if (gitBusy) return false;
+    gitBusy = true;
+    report(gitStatus, TEXT.working);
+    try {
+      const reply = await api('POST', '/api/repo', request);
+      applyGit(null, reply.repo);  // what it did to the graph's own view of the changes follows with the watch
+      report(gitStatus, said ? said() : tail(reply.output));
+      return true;
+    } catch (error) {
+      report(gitStatus, error.message, true);
+      return false;
+    } finally { gitBusy = false; }
+  }
+  async function move(request) {  // a switch or a pull changes the files on disk, so the graph is built again
+    if (unsaved()) return report(gitStatus, TEXT.saveFirst, true);
+    const before = REPO.head;
+    if (!await repo(request) || REPO.head === before) return;
+    report(gitStatus, TEXT.rebuilding);
+    try { await api('POST', '/api/rebuild', {}); drafts.clear(); location.reload(); }
+    catch (error) { report(gitStatus, error.message, true); }
+  }
+  const commitText = el('textarea', {className: 'short'});
+  const branchField = el('input', {className: 'field', spellcheck: false});
+  const baseField = el('input', {className: 'field', spellcheck: false});
+  async function commit() {
+    if (!REPO.counts.staged) return report(gitStatus, TEXT.nothingStaged, true);
+    if (!commitText.value.trim()) return report(gitStatus, TEXT.needMessage, true);
+    if (await repo({do: 'commit', message: commitText.value}, () => `${TEXT.committed} ${REPO.head}`)) commitText.value = '';
+  }
+  async function branchOff() {
+    if (branchField.value.trim() && await repo({do: 'branch', name: branchField.value})) branchField.value = '';
+  }
+  const compare = async () => { if (await refreshGit(baseField.value.trim() || 'HEAD')) report(gitStatus, ''); };
+  commitText.placeholder = TEXT.commitMessage;
+  commitText.setAttribute('aria-label', TEXT.commitMessage);
+  commitText.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); commit(); }
+  });
+  branchField.placeholder = TEXT.newBranch;
+  branchField.setAttribute('aria-label', TEXT.newBranch);
+  branchField.addEventListener('keydown', event => { if (event.key === 'Enter') branchOff(); });
+  baseField.addEventListener('keydown', event => { if (event.key === 'Enter') compare(); });
+
+  function fileGroup(box, staged) {
+    const files = staged ? REPO.staged : REPO.unstaged, total = staged ? REPO.counts.staged : REPO.counts.unstaged;
+    if (!total) return;
+    box.append(el('h3', {className: 'split'}, `${staged ? TEXT.staged : TEXT.changes}  ${number(total)}`,
+      el('button', {className: 'link', textContent: staged ? TEXT.unstageAll : TEXT.stageAll,
+                    onclick: () => repo({do: staged ? 'unstage' : 'stage'}, () => '')})));
+    const list = el('ul');
+    for (const path in files) {
+      const open = el('button', {className: 'item', title: path, onclick: () => openGit({path, staged})},
+        el('span', {className: 'grow', textContent: path}),
+        el('span', {className: 'tag', textContent: TEXT[files[path]] || files[path]}));
+      open.setAttribute('aria-pressed', String(!!gitView && gitView.path === path && gitView.staged === staged));
+      const flip = el('button', {className: 'btn small', textContent: staged ? '−' : '+', title: staged ? TEXT.unstage : TEXT.stage,
+                                 onclick: () => repo({do: staged ? 'unstage' : 'stage', paths: [path]}, () => '')});
+      flip.setAttribute('aria-label', `${flip.title} ${path}`);
+      list.append(el('li', {className: 'pair'}, open, flip));
+    }
+    box.append(list);
+    const hidden = total - Object.keys(files).length;
+    if (hidden) box.append(el('p', {className: 'muted', textContent: `+ ${number(hidden)} ${TEXT.more}`}));
+  }
+  function workPanel(box) {
+    const pick = el('select');
+    pick.setAttribute('aria-label', TEXT.branch);
+    if (!REPO.branch) pick.append(el('option', {value: '', textContent: `${TEXT.detached} (${REPO.head})`}));
+    for (const name of new Set([REPO.branch, ...REPO.branches])) if (name) pick.append(el('option', {value: name, textContent: name}));
+    if (REPO.remote_branches.length) {
+      const group = el('optgroup', {label: TEXT.remoteOnly});
+      for (const name of REPO.remote_branches) group.append(el('option', {value: name, textContent: name}));
+      pick.append(group);
+    }
+    pick.value = REPO.branch;
+    pick.addEventListener('change', () => {
+      const name = pick.value;
+      pick.value = REPO.branch;  // it shows the new branch once git has switched to it
+      if (name) move({do: 'switch', name});
+    });
+    const far = (REPO.ahead ? ` ↑${REPO.ahead}` : '') + (REPO.behind ? ` ↓${REPO.behind}` : '');
+    box.append(el('label', {className: 'check'}, el('span', {textContent: TEXT.branch}), pick),
+      el('p', {className: 'muted', textContent: `commit ${REPO.head || '?'}` + (REPO.upstream ? `, ${REPO.upstream}${far}` : '')}));
+    if (REPO.remote) {
+      const remote = el('div', {className: 'buttons'}, action(TEXT.fetch, () => repo({do: 'fetch'})));
+      if (REPO.upstream) remote.append(action(TEXT.pull + (REPO.behind ? ` ↓${REPO.behind}` : ''), () => move({do: 'pull'})),
+        action(TEXT.push + (REPO.ahead ? ` ↑${REPO.ahead}` : ''), () => repo({do: 'push'}), REPO.ahead > 0));
+      else if (REPO.branch) remote.append(action(TEXT.publish, () => repo({do: 'push'}), true));
+      box.append(remote);
+    }
+    fileGroup(box, true);
+    fileGroup(box, false);
+    if (!REPO.counts.staged && !REPO.counts.unstaged) box.append(el('p', {className: 'muted', style: 'margin-top:12px', textContent: TEXT.cleanTree}));
+    else {
+      const go = action(TEXT.commit, commit, true);
+      go.disabled = !REPO.counts.staged;
+      box.append(el('div', {style: 'margin-top:14px'}, commitText), el('div', {className: 'buttons'}, go));
+    }
+    box.append(gitStatus, el('div', {className: 'pair', style: 'gap:8px;margin-top:8px'}, branchField, action(TEXT.create, branchOff)));
   }
   function renderGit() {
-    const box = $('git');
+    const box = $('git'), held = document.activeElement;
     box.parentElement.hidden = !GIT;
     if (!GIT) return;
-    box.replaceChildren(el('p', {className: 'muted', textContent: `${TEXT.branch} ${GIT.branch || '?'}, commit ${GIT.head || '?'}`}));
+    box.replaceChildren();
+    if (EDIT && REPO) workPanel(box);
+    else box.append(el('p', {className: 'muted', textContent: `${TEXT.branch} ${GIT.branch || '?'}, commit ${GIT.head || '?'}`}));
+    const files = Object.keys(GIT.changed || {}).length, base = GIT.base || 'HEAD';
     if (EDIT) {
-      const base = el('input', {className: 'field', value: GIT.base || 'HEAD', spellcheck: false});
-      const go = () => refreshGit(base.value.trim() || 'HEAD');
-      base.addEventListener('keydown', event => { if (event.key === 'Enter') go(); });
-      box.append(el('label', {className: 'stack'}, el('span', {textContent: TEXT.compareWith}), base),
-        el('div', {className: 'buttons'}, action(TEXT.refresh, go)), gitStatus);
+      if (held !== baseField) baseField.value = base;
+      box.append(el('label', {className: 'stack', style: 'margin-top:18px'}, el('span', {textContent: TEXT.compareWith}), baseField),
+        el('div', {className: 'buttons'}, action(TEXT.refresh, compare)));
+      if (!REPO) box.append(gitStatus);
     } else box.append(el('p', {className: 'muted', textContent: TEXT.asBuilt}));
-    const files = Object.keys(GIT.changed || {}).length;
-    box.append(el('p', {textContent: files ? `${number(files)} ${TEXT.changedFiles}, ${number(gitChanged.size)} ${TEXT.nodes}`
-                                           : `${TEXT.noChanges} ${GIT.base || 'HEAD'}`}));
-    if (!gitChanged.size) return;
-    const check = el('input', {type: 'checkbox', checked: gitFocus});
-    check.addEventListener('change', () => { gitFocus = check.checked; dirty = true; });
-    box.append(el('label', {className: 'check'}, check, el('span', {textContent: TEXT.highlight})),
-      el('p', {className: 'muted', style: 'margin-top:6px', textContent: TEXT.legendGit}));
-    const list = el('ul');
-    const whole = [...gitChanged].filter(item => ['file', 'doc', 'image'].includes(item[0].kind))
-      .sort((a, b) => a[0].label.localeCompare(b[0].label));
-    for (const [n, state] of whole.slice(0, 40)) list.append(el('li', null, nodeButton(n, TEXT[state] || state)));
-    box.append(list);
+    box.append(el('p', {style: 'margin-top:10px', textContent: files ? `${number(files)} ${TEXT.changedFiles}, ${number(gitChanged.size)} ${TEXT.nodes}`
+                                                                       : `${TEXT.noChanges} ${base}`}));
+    if (gitChanged.size) {
+      const check = el('input', {type: 'checkbox', checked: gitFocus});
+      check.addEventListener('change', () => { gitFocus = check.checked; dirty = true; });
+      box.append(el('label', {className: 'check'}, check, el('span', {textContent: TEXT.highlight})),
+        el('p', {className: 'muted', style: 'margin-top:6px', textContent: TEXT.legendGit}));
+      if (!REPO || base !== 'HEAD') {  // against the last commit, the files are already listed above
+        const list = el('ul');
+        const whole = [...gitChanged].filter(item => ['file', 'doc', 'image'].includes(item[0].kind))
+          .sort((a, b) => a[0].label.localeCompare(b[0].label));
+        for (const [n, state] of whole.slice(0, 40)) list.append(el('li', null, nodeButton(n, TEXT[state] || state)));
+        box.append(list);
+      }
+    }
+    if (EDIT && REPO && REPO.log.length) {
+      box.append(el('h3', {textContent: TEXT.recent}));
+      const list = el('ul');
+      for (const item of REPO.log) {
+        const open = el('button', {className: 'item', title: `${item.author}, ${item.date}`, onclick: () => openGit(Object.assign({}, item))},
+          el('span', {className: 'path', textContent: item.hash}), el('span', {className: 'grow', textContent: item.subject}));
+        if (!item.pushed && REPO.remote) open.append(el('span', {className: 'tag', textContent: '↑', title: TEXT.notPushed}));
+        open.setAttribute('aria-pressed', String(!!gitView && gitView.hash === item.hash));
+        list.append(el('li', null, open));
+      }
+      box.append(list);
+    }
+    if (held && box.contains(held)) held.focus();  // drawing again must not take the caret away
+  }
+
+  // A diff in the detail panel: one file as it is staged or not, or one commit.
+  function openGit(what) {
+    if (selected) select(null);
+    gitView = what;
+    renderGit();
+    renderDetail();
+    loadPatch(what);
+  }
+  async function loadPatch(what) {
+    const query = what.hash ? 'commit=' + encodeURIComponent(what.hash)
+      : 'path=' + encodeURIComponent(what.path) + (what.staged ? '&staged=1' : '');
+    let patch = '', error = '';
+    try { patch = (await api('GET', '/api/diff?' + query)).patch; } catch (failure) { error = failure.message; }
+    if (patch === what.patch && error === what.error) return;  // nothing new, so the reader keeps their place
+    what.patch = patch;
+    what.error = error;
+    if (gitView === what) renderDetail();
+  }
+  function diffPanel(panel) {
+    const what = gitView, facts = el('div', {className: 'facts'}), buttons = el('div', {className: 'buttons'});
+    panel.classList.add('roomy');
+    stage.style.setProperty('--detail-w', seen().right + 'px');
+    panel.replaceChildren(el('button', {id: 'close', className: 'btn icon', textContent: '×', title: TEXT.close, onclick: () => select(null)}));
+    if (what.hash) {
+      facts.append(el('span', {className: 'tag', textContent: 'commit ' + what.hash}));
+      if (!what.pushed && REPO && REPO.remote) facts.append(el('span', {className: 'tag', textContent: TEXT.notPushed}));
+      panel.append(el('h2', {textContent: what.subject}), facts, el('p', {className: 'path', textContent: `${what.author}, ${what.date}`}));
+    } else {
+      const state = REPO && (what.staged ? REPO.staged : REPO.unstaged)[what.path];
+      const n = nodes.find(item => item.source_file === what.path && ['file', 'doc', 'image'].includes(item.kind));
+      if (state) facts.append(el('span', {className: 'tag', style: `color:${CHANGED};border-color:${CHANGED}`, textContent: TEXT[state] || state}));
+      facts.append(el('span', {className: 'tag', textContent: what.staged ? TEXT.inIndex : TEXT.inTree}));
+      if (state) buttons.append(action(what.staged ? TEXT.unstage : TEXT.stage, async () => {
+        const done = await repo({do: what.staged ? 'unstage' : 'stage', paths: [what.path]}, () => '');
+        if (done && gitView === what) openGit({path: what.path, staged: !what.staged});  // follow the file to where it went
+      }, !what.staged));
+      if (n) buttons.append(action(TEXT.openNode, () => select(n, true)));
+      panel.append(el('h2', {textContent: what.path.split('/').pop()}), facts, el('p', {className: 'path', textContent: what.path}), buttons);
+    }
+    if (what.patch === undefined) panel.append(el('p', {className: 'status', textContent: TEXT.loading}));
+    else if (what.error) panel.append(el('p', {className: 'status bad', textContent: what.error}));
+    else if (!what.patch) panel.append(el('p', {className: 'muted', style: 'margin-top:14px', textContent: TEXT.noDiff}));
+    else {
+      const body = el('pre', {className: 'ide-diff', innerHTML: paintDiff(what.patch)});
+      body.addEventListener('scroll', () => { what.scroll = body.scrollTop; });
+      panel.append(el('div', {className: 'ide', style: 'height:calc(100vh - 270px);margin-top:14px'}, body));
+      requestAnimationFrame(() => { body.scrollTop = what.scroll || 0; });
+    }
+  }
+
+  // Following the folder: the server answers when the working tree changes, and is asked again.
+  async function reloadSource(n, draft) {
+    try {
+      const fresh = (await api('GET', '/api/node?id=' + encodeURIComponent(n.id))).source;
+      if (!fresh || drafts.get(n.id) !== draft || draft.code !== draft.source.text) return;
+      if (fresh.hash === draft.source.hash && JSON.stringify(fresh.git) === JSON.stringify(draft.source.git)) return;
+      draft.source = fresh;
+      draft.code = fresh.text;
+      if (selected === n && tab === 'code') renderDetail();
+    } catch (error) { /* the next change asks again */ }
+  }
+  async function follow() {
+    if (gitView && !gitView.hash) loadPatch(gitView);  // the diff on show first: it is what is being watched
+    await refreshGit();
+    // Files are read again from disk, except where there are edits here that it would lose.
+    for (const [id, draft] of drafts) {
+      if (!draft.source || (draft.source.editable && draft.code !== draft.source.text)) continue;
+      if (selected && selected.id === id && tab === 'code') reloadSource(selected, draft);
+      else { delete draft.source; delete draft.code; }
+    }
+  }
+  async function watch() {
+    let stamp = '';
+    for (;;) {
+      try {
+        const reply = await api('GET', '/api/watch?seen=' + encodeURIComponent(stamp));
+        if (reply.stamp == null) return;  // not a repository, so there is nothing to follow
+        if (stamp && reply.stamp !== stamp) await follow();
+        stamp = reply.stamp;
+      } catch (error) { await new Promise(resume => setTimeout(resume, 4000)); }
+    }
   }
 
   // ---- search, in the top bar
@@ -1427,6 +1673,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   recolor();
   applyGit();
   refreshGit();  // with a server behind the page, show the working tree as it is now
+  if (EDIT) watch();
   scatter();
   refilter();
   alpha = 1;

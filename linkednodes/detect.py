@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 from . import saved
-from .util import read_text
+from .util import QUIET, read_text
 
 OUT_DIR = "linkednodes-out"
 IGNORE_FILE = ".linkednodesignore"
@@ -52,7 +52,7 @@ def _git_files(root: Path) -> set[str] | None:
     command = ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others",
                "--exclude-standard"]
     try:
-        result = subprocess.run(command, capture_output=True, timeout=120)
+        result = subprocess.run(command, capture_output=True, timeout=120, **QUIET)
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:

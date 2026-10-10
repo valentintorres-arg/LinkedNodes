@@ -1,9 +1,10 @@
 """A local server that makes the graph editable: notes, node properties and source files.
 
 A page opened from disk cannot write files, so editing goes through this server. It
-listens on 127.0.0.1 only. Because it can write to the project, every API call must
-carry a token that is handed out with the page, and the Host header must name this
-server; together they stop another website from driving it through the browser.
+listens on 127.0.0.1 only. Because it can write to the project, and commit and push
+what is in it, every API call must carry a token that is handed out with the page,
+and the Host header must name this server; together they stop another website from
+driving it through the browser.
 """
 from __future__ import annotations
 
@@ -13,17 +14,19 @@ import os
 import secrets
 import shutil
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import annotations, gitinfo, graph, pipeline
+from . import annotations, gitinfo, gitops, graph, pipeline
 from .detect import OUT_DIR
 from .util import read_json
 
 MAX_SOURCE = 2_000_000
 MAX_BODY = 6_000_000
+PATIENCE = 25  # seconds a page may wait to hear that the working tree changed
 BOM = b"\xef\xbb\xbf"
 
 
@@ -40,6 +43,22 @@ class App:
         self.token = secrets.token_urlsafe(24)
         self.hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
         self.lock = threading.Lock()  # one write or rebuild at a time
+        self.stopped = threading.Event()
+
+    def watch(self, seen: str) -> str | None:
+        """Wait until the working tree no longer looks like `seen`, and say what it looks like now.
+
+        The page asks again as soon as it has an answer, so this is how it follows the
+        folder as it changes. Outside a repository there is nothing to follow.
+        """
+        deadline = time.monotonic() + PATIENCE
+        while True:
+            started = time.monotonic()
+            stamp = gitops.fingerprint(self.root)
+            took = time.monotonic() - started
+            # A repository where status is slow is asked less often, to leave it in peace.
+            if stamp != seen or started > deadline or self.stopped.wait(max(1.0, 4 * took)):
+                return stamp
 
     def node(self, node_id) -> dict:
         data = read_json(self.out / "graph.json") or {"nodes": []}
@@ -141,6 +160,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, self._api(app, method, url))
         except Refused as error:
             self._json(error.status, {"error": str(error)})
+        except gitops.GitError as error:
+            self._json(409, {"error": str(error)})
         except FileNotFoundError as error:
             self._json(404, {"error": str(error)})
         except Exception as error:  # a broken request must not take the server down
@@ -148,15 +169,20 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _api(self, app: App, method: str, url) -> dict:
         route = (method, url.path)
+        asked = {key: values[0] for key, values in parse_qs(url.query).items()}
         if route == ("GET", "/api/git"):  # the working tree as it is now, not as it was at build time
             data = read_json(app.out / "graph.json") or {"nodes": []}
             try:
-                state = gitinfo.snapshot(app.root, data["nodes"], parse_qs(url.query).get("base", ["HEAD"])[0])
+                state = gitinfo.snapshot(app.root, data["nodes"], asked.get("base", "HEAD"))
             except ValueError as error:
                 raise Refused(400, str(error))
-            return {"git": state}
+            return {"git": state, "repo": gitops.state(app.root)}
+        if route == ("GET", "/api/watch"):
+            return {"stamp": app.watch(asked.get("seen", ""))}
+        if route == ("GET", "/api/diff"):
+            return {"patch": gitops.patch(app.root, asked.get("path"), bool(asked.get("staged")), asked.get("commit"))}
         if route == ("GET", "/api/node"):
-            node = app.node(parse_qs(url.query).get("id", [""])[0])
+            node = app.node(asked.get("id", ""))
             return {"note": annotations.read_notes(app.out).get(node["id"], ""),
                     "source": app.read_source(node)}
         body = self._body()
@@ -165,6 +191,8 @@ class _Handler(BaseHTTPRequestHandler):
                 scanned = pipeline.scan(app.root)
                 built = pipeline.build(app.root)
                 return {"nodes": built["counts"]["nodes"], "pending": sum(scanned["chunks"].values())}
+            if route == ("POST", "/api/repo"):
+                return {"output": gitops.act(app.root, body), "repo": gitops.state(app.root)}
             node = app.node(body.get("id"))
             if route == ("PUT", "/api/note"):
                 annotations.write_note(app.out, node["id"], str(body.get("text") or ""))
@@ -194,6 +222,12 @@ class _Server(ThreadingHTTPServer):
     # Windows lets a second server bind a port that is already in use, and then hands the
     # requests to whichever it likes. Refusing makes a taken port an error, as it should be.
     allow_reuse_address = os.name != "nt"
+    app = None  # set once the port is bound; a server that failed to bind is closed without one
+
+    def server_close(self):
+        if self.app:
+            self.app.stopped.set()  # lets go of the pages that are waiting on the working tree
+        super().server_close()
 
 
 def make_server(root: Path, port: int = 0) -> ThreadingHTTPServer:

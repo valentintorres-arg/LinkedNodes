@@ -109,16 +109,17 @@ It is not signed, so Windows may warn the first time it runs on another machine.
 
 ## Git
 
-When the folder is a git repository, the graph also carries what git knows. Apart
-from the optional hook at the end of this list, nothing here writes to the repository.
+When the folder is a git repository, the graph also carries what git knows. Nothing
+in this list writes to the repository, apart from the optional hook at its end. What
+does write, when you ask it to, is the next section.
 
 - **What changed and what uses it.** The Git section of the viewer lists the files
   that differ from the last commit, uncommitted work included. Switch on the
   highlight and the changed nodes get an orange ring, the nodes that use them a
   dashed one, and the rest fades. Changes are narrowed down to the functions and
-  methods whose lines were touched. With the server running you can compare with any
-  commit, branch or tag and refresh; `graph.html` on its own shows the state at
-  build time.
+  methods whose lines were touched. With the server running the list follows the
+  folder as it changes, and you can compare with any commit, branch or tag;
+  `graph.html` on its own shows the state at build time.
 - **History per node.** Each node's panel shows when its file last changed, who
   changed it and in how many commits. "Colour by" gains two options, activity and
   last change, which show history as brightness.
@@ -151,6 +152,30 @@ History is per file, not per function: every function in a file shares its file'
 dates and counts. Which functions changed is worked out from the line numbers
 recorded at the last build, so it drifts if code has moved a lot since then.
 
+### Working with git from the viewer
+
+With the server or the desktop window, the Git section is also where the work gets
+committed:
+
+- **Live.** The section follows the working tree: save a file in any editor, or let
+  an agent change it, and within a second or two the list, the highlight in the
+  graph and the diff on show are up to date. A file open in the Code tab is read
+  again from disk, unless it has edits of yours that this would lose.
+- **Diffs.** Click a changed file to see its diff beside the graph, staged or not,
+  and a commit in the list of the latest ones to see what it changed.
+- **Stage and commit.** `+` and `−` move a file in and out of the commit, or all of
+  them at once. Write the message and press Commit, or Ctrl+Enter.
+- **Branches.** Pick a branch to switch to it, including one that only the remote
+  has, or name a new one. After a switch the graph is rebuilt, since the files
+  changed under it.
+- **Remote.** Fetch, pull and push, with how far ahead and behind the branch is. The
+  first push of a branch publishes it. Commits not yet on the remote are marked.
+
+It runs the git you have, with your name, your hooks and your credentials, and shows
+what git answers. Three things are left to a terminal on purpose: a pull only
+fast-forwards, so merges and conflicts are not handled here; nothing discards
+changes; and a push that needs a password typed fails instead of waiting.
+
 ## Editing nodes and attaching notes
 
 A page opened from disk cannot write files, so editing runs through a local server:
@@ -180,7 +205,8 @@ It opens the same viewer with three more tabs on every node:
 The server listens on 127.0.0.1 only and refuses requests that do not carry the
 token it hands to its own page. It edits only the code and text files that the scan
 found in the folder, and refuses to save over a file that changed on disk after it
-was opened.
+was opened. Its git requests take paths inside the folder and valid branch names,
+and nothing else.
 
 ## How it works
 

@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 import unicodedata
 from pathlib import Path
 
 # Default strength of an edge for each confidence label.
 CONFIDENCE = {"EXTRACTED": 1.0, "INFERRED": 0.7, "AMBIGUOUS": 0.3}
+
+# Started from a window with no console, a console program opens one of its own and flashes
+# it on screen. Every call to git passes this, so that it stays out of sight.
+QUIET = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
 
 def node(id: str, label: str, kind: str, source_file: str = "", **extra) -> dict:

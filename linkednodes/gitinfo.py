@@ -1,6 +1,6 @@
 """What git knows about the folder: who last touched each file, how often, and what changed.
 
-Everything here only reads the repository. History is taken per file, which is cheap.
+Everything here only reads the repository; what writes to it is in gitops. History is taken per file, which is cheap.
 What changed is narrowed down to functions and methods by matching the changed lines
 against where each definition starts.
 """
@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .detect import OUT_DIR
 from .graph import CONTAINMENT, family
-from .util import edge, node, slug
+from .util import QUIET, edge, node, slug
 
 REF = re.compile(r"^[\w./@^~{}-]+$")
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -26,7 +26,7 @@ MAX_PATCH = 400_000
 def _git(root: Path, *args: str) -> str | None:
     command = ["git", "-C", str(root), "-c", "core.quotepath=false", *args]
     try:
-        result = subprocess.run(command, capture_output=True, timeout=120)
+        result = subprocess.run(command, capture_output=True, timeout=120, **QUIET)
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.decode("utf-8", "replace") if result.returncode == 0 else None

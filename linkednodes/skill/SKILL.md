@@ -197,7 +197,9 @@ that node: prefer it to what was inferred, and mention it when it answers the qu
 
 To let the user edit, tell them to run one of these in a terminal of their own,
 since both keep running until closed. The first opens a desktop window and needs
-pywebview; the second uses the browser:
+pywebview; the second uses the browser. Either one follows the working tree as it
+changes, so the user sees your edits as diffs while you work, and can stage,
+commit, switch branch and push from its Git section:
 
 ```
 python -m linkednodes app "<folder>"
