@@ -19,7 +19,7 @@ import traceback
 import webbrowser
 from pathlib import Path
 
-from . import github, gitops, pipeline
+from . import github, gitops, pipeline, titlebar
 from .detect import OUT_DIR
 from .server import bind
 from .util import read_json, write_json
@@ -30,7 +30,8 @@ REPO = re.compile(r"^[\w.-]+/[\w.-]+$")
 PAGE = """<!doctype html><meta charset="utf-8">
 <style>
   body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0b0c0e; color: #fff;
-         font: 14px/1.4 "Helvetica Neue", Helvetica, Inter, Arial, sans-serif; }}
+         font: 14px/1.4 "Helvetica Neue", Helvetica, Inter, Arial, sans-serif;
+         box-sizing: border-box; padding-top: {bar}px; }}
   main {{ width: min(560px, 86vw); padding: 48px 0; }}
   h1 {{ font-size: 34px; font-weight: 400; letter-spacing: -.02em; margin: 0 0 6px; }}
   p {{ color: #b4b7bc; margin: 0 0 22px; }}
@@ -122,8 +123,9 @@ class Desktop:
 
     @property
     def address(self) -> str:
-        # The web view reports the system's language, so the viewer is told which one to use.
-        return f"http://127.0.0.1:{self.httpd.server_address[1]}/?lang={self.lang}"
+        # The web view reports the system's language, so the viewer is told which one to use,
+        # and that it is in the window, where the title bar takes some room at the top.
+        return f"http://127.0.0.1:{self.httpd.server_address[1]}/?lang={self.lang}&app=1"
 
     def serve(self, root: Path) -> str:
         """Start a server for a folder, building its graph first if it has none."""
@@ -142,7 +144,7 @@ class Desktop:
 
     def message(self, text: str, back: bool = False) -> str:
         home = f"<button onclick='pywebview.api.home()'>{self.say('Back', 'Volver')}</button>" if back else ""
-        return PAGE.format(body=f"<p>{html.escape(text)}</p>{home}")
+        return PAGE.format(bar=titlebar.HEIGHT, body=f"<p>{html.escape(text)}</p>{home}")
 
     def account_section(self) -> str:
         """The part of the start page about GitHub: the way in, the code to type, or the repositories."""
@@ -185,7 +187,7 @@ class Desktop:
             f"<button class='row' onclick='pywebview.api.again({index})'>{html.escape(path.name)}"
             f"<small>{html.escape(str(path))}</small></button>"
             for index, path in enumerate(recent()))
-        return PAGE.format(body=(
+        return PAGE.format(bar=titlebar.HEIGHT, body=(
             "<h1>LinkedNodes</h1>"
             f"<p>{self.say('Open a folder to see its code, notes, saved links and images as a graph.', 'Abrí una carpeta para ver su código, notas, enlaces guardados e imágenes como un grafo.')}</p>"
             f"<button class='main' onclick='pywebview.api.choose()'>{self.say('Open folder...', 'Abrir carpeta...')}</button>"
@@ -208,6 +210,30 @@ class Desktop:
         self.at_home = True
         self.window.load_html(self.welcome())
 
+    def frame(self) -> None:
+        """Before the window is first shown: its caption comes off, to make room for our own bar."""
+        titlebar.unframe(self.window)
+
+    def dress(self) -> None:
+        """Put the title bar into the page that has just loaded, whichever it is."""
+        say = self.say
+        menus = [
+            (say("File", "Archivo"), [
+                (say("Open folder...", "Abrir carpeta..."), "choose", "", False),
+                (say("Recent folders", "Carpetas recientes"), "home", "", False),
+                *([(say("GitHub repositories", "Repositorios de GitHub"), "home", "", False)] if github.CLIENT_ID else []),
+                (say("Rebuild the graph", "Reconstruir el grafo"), "rebuild", "", False),
+                None,
+                (say("Exit", "Salir"), "close", "", False),
+            ]),
+            (say("Language", "Idioma"), [("Español", "speak", "es", self.lang == "es"),
+                                         ("English", "speak", "en", self.lang == "en")]),
+        ]
+        buttons = {"minimize": say("Minimize", "Minimizar"), "maximize": say("Maximize or restore", "Maximizar o restaurar"),
+                   "close": say("Close", "Cerrar")} if os.name == "nt" else None
+        title = self.root.name if self.root and not self.at_home else ""
+        self.window.evaluate_js(titlebar.script(menus, title, buttons))
+
     def redraw(self) -> None:
         """Draw the start page again, if that is what the window is showing."""
         if self.window and self.at_home:
@@ -226,13 +252,15 @@ class Desktop:
             self.show(folders[index])
 
     def rebuild(self) -> None:
-        if self.root:
+        if self.root and not self.at_home:
             pipeline.scan(self.root)
             pipeline.build(self.root)
             self.window.load_url(self.address)
 
     def speak(self, lang: str) -> None:
-        """Switch the viewer's language now; the menu itself follows on the next start."""
+        """Switch the language of the page on show, and of the bar above it."""
+        if lang not in ("es", "en"):
+            return
         self.lang = lang
         remember(lang=lang)
         if self.httpd and not self.at_home:
@@ -346,9 +374,9 @@ class Desktop:
 
 
 class _Api:
-    """What a page may ask of the program: to pick a folder, to sign in to GitHub, and to
-    open what the start page lists. It names things by position; no path, address or
-    token ever comes from a page or goes to one."""
+    """What a page may ask of the program: what its menus and window buttons do, to pick a
+    folder, to sign in to GitHub, and to open what the start page lists. It names things
+    by position; no path, address or token ever comes from a page or goes to one."""
 
     def __init__(self, app: Desktop):
         self._app = app
@@ -377,12 +405,30 @@ class _Api:
     def repo(self, index) -> None:
         self._app.repo(index)
 
+    def rebuild(self) -> None:
+        self._app.rebuild()
+
+    def speak(self, lang) -> None:
+        self._app.speak(lang)
+
+    def minimize(self) -> None:
+        self._app.window.minimize()
+
+    def maximize(self) -> None:
+        window = self._app.window
+        window.restore() if titlebar.zoomed(window) else window.maximize()
+
+    def zoomed(self) -> bool:
+        return titlebar.zoomed(self._app.window)
+
+    def close(self) -> None:
+        self._app.window.destroy()
+
 
 def run(root: Path | None = None) -> None:
     """Open the window on a folder; without one, on the last folder used or the start page."""
     try:
         import webview
-        from webview.menu import Menu, MenuAction, MenuSeparator
     except ImportError:
         raise SystemExit("error: the desktop window needs pywebview. Install it with: pip install pywebview")
     app = Desktop()
@@ -395,26 +441,15 @@ def run(root: Path | None = None) -> None:
     else:
         app.at_home = True
         app.window = webview.create_window("LinkedNodes", html=app.welcome(), **look)
-    menu = [
-        Menu(app.say("File", "Archivo"), [
-            MenuAction(app.say("Open folder...", "Abrir carpeta..."), app.choose),
-            MenuAction(app.say("Recent folders", "Carpetas recientes"), app.home),
-            *([MenuAction(app.say("GitHub repositories", "Repositorios de GitHub"), app.home)] if github.CLIENT_ID else []),
-            MenuAction(app.say("Rebuild the graph", "Reconstruir el grafo"), app.rebuild),
-            MenuSeparator(),
-            MenuAction(app.say("Exit", "Salir"), lambda: app.window.destroy()),
-        ]),
-        Menu(app.say("Language", "Idioma"), [
-            MenuAction("Español", lambda: app.speak("es")),
-            MenuAction("English", lambda: app.speak("en")),
-        ]),
-    ]
+    # The window draws its own title bar, with the menus in it, on every page it loads.
+    app.window.events.before_show += app.frame
+    app.window.events.loaded += app.dress
     storage = data_folder() / "webview"
     storage.mkdir(parents=True, exist_ok=True)
     try:
         # Not private, and with a folder of its own, so the viewer's settings survive. Once the
         # window is up, GitHub is asked who the stored token belongs to, if there is one.
-        webview.start(app.account if app.asking else None, menu=menu, private_mode=False, storage_path=str(storage))
+        webview.start(app.account if app.asking else None, private_mode=False, storage_path=str(storage))
     finally:
         app.close()
 

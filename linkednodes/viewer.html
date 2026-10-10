@@ -12,6 +12,7 @@
   --hover: rgba(255, 255, 255, .08); --bad: #ff9c9c;
   --edge: rgba(255, 255, 255, .17); --edge-hi: rgba(255, 255, 255, .95);
   --ease: cubic-bezier(.2, .8, .2, 1); --gap: 12px; --bar: 52px; --side-w: 324px; --detail-w: 0px;
+  --chrome: 0px;  /* the room the desktop window's title bar takes at the top */
   --sans: "Neue Haas Grotesk Text Pro", "Helvetica Neue", Helvetica, Inter, Arial, sans-serif;
   --mono: "Cascadia Code", "JetBrains Mono", Consolas, Menlo, monospace;
   interpolate-size: allow-keywords;
@@ -31,15 +32,18 @@ a { color: var(--ink); text-underline-offset: 2px; }
 #stage { position: fixed; inset: 0; overflow: hidden; }
 canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 #bar {
-  position: fixed; top: var(--gap); left: var(--gap); right: var(--gap); height: var(--bar); z-index: 5;
-  display: flex; align-items: center; gap: 16px; padding: 0 10px 0 20px; background: var(--panel); border-radius: 4px;
+  position: fixed; top: calc(var(--chrome) + var(--gap)); left: var(--gap); right: var(--gap); height: var(--bar); z-index: 5;
+  display: flex; align-items: center; gap: 12px; padding: 0 20px 0 10px; background: var(--panel); border-radius: 4px;
 }
-#title { font-size: 17px; letter-spacing: -.01em; white-space: nowrap; }
+#title { font-size: 17px; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The chevron sits over the panel it folds away, and turns to point at where the panel will go. */
+#menu svg { width: 14px; height: 14px; display: block; margin: auto; transition: transform .34s var(--ease); }
+body.no-side #menu svg { transform: rotate(180deg); }
 #stats, .tag, summary, h3, .count {
   font: 500 10px/1.2 var(--sans); text-transform: uppercase; letter-spacing: .11em;
 }
 #stats { color: var(--dim); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
-#finder { position: relative; margin-left: auto; width: min(400px, 40vw); }
+#finder { position: relative; margin-right: auto; flex: 0 1 min(400px, 40vw); min-width: 120px; }
 #search {
   width: 100%; height: 32px; padding: 0 34px 0 12px; font: inherit; color: var(--ink); background: none;
   border: 1px solid var(--border); border-radius: 0;
@@ -54,7 +58,7 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
 #results li.on .item { background: var(--ink); color: #000; }
 #results li.on .tag { color: #000; border-color: rgba(0, 0, 0, .3); }
 aside {
-  position: absolute; top: calc(var(--gap) * 2 + var(--bar)); bottom: var(--gap); background: var(--panel);
+  position: absolute; top: calc(var(--chrome) + var(--gap) * 2 + var(--bar)); bottom: var(--gap); background: var(--panel);
   border-radius: 4px; overflow-y: auto; scrollbar-color: rgba(255, 255, 255, .25) transparent; scrollbar-width: thin;
 }
 #side { left: var(--gap); width: 300px; padding: 4px 18px 20px; transition: transform .34s var(--ease); }
@@ -184,7 +188,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
 
 /* ---- code editor, in the colours of Visual Studio Code's Dark+ theme */
 .ide {
-  --ide-bg: #1e1e1e; --ide-fg: #d4d4d4; display: flex; flex-direction: column; height: calc(100vh - 360px);
+  --ide-bg: #1e1e1e; --ide-fg: #d4d4d4; display: flex; flex-direction: column; height: calc(100vh - 360px - var(--chrome));
   min-height: 260px; overflow: hidden; box-shadow: 0 0 0 1px #3c3c3c; background: var(--ide-bg);
 }
 .ide-tabs { display: flex; background: #252526; flex: none; }
@@ -240,14 +244,14 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
 </head>
 <body>
 <header id="bar">
-  <span id="title"></span>
-  <span id="stats"></span>
+  <button id="menu" class="btn icon"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button>
   <div id="finder">
     <input type="search" id="search" autocomplete="off" spellcheck="false">
     <kbd>/</kbd>
     <ul id="results" hidden></ul>
   </div>
-  <button id="menu" class="btn icon">&#9776;</button>
+  <span id="stats"></span>
+  <span id="title"></span>
 </header>
 <main id="stage">
   <canvas id="canvas"></canvas>
@@ -275,6 +279,8 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   // Spanish when the browser asks for it and English otherwise
   const SPANISH = (new URLSearchParams(location.search).get('lang') || navigator.language || 'en')
     .toLowerCase().startsWith('es');
+  const CHROME = new URLSearchParams(location.search).has('app') ? 32 : 0;  // the window's title bar, when in it
+  document.documentElement.style.setProperty('--chrome', CHROME + 'px');
   const TEXT = SPANISH ? {
     search: 'Buscar un nodo', noMatches: 'Nada coincide', nodes: 'nodos', edges: 'relaciones',
     showing: 'visibles', mostConnected: 'más conectados de', filters: 'Filtros', kinds: 'Tipos de nodo',
@@ -546,7 +552,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   // ---- the camera. The panels float over the canvas, so the part of it that can be
   // seen is what lies between them; fitting and centring aim at that part.
   function seen() {
-    const GAP = 12, top = 76;  // the bar and the margins around the slabs, as set in the stylesheet
+    const GAP = 12, top = 76 + CHROME;  // the bars and the margins around the slabs, as set in the stylesheet
     const left = document.body.classList.contains('no-side') ? 0 : $('side').offsetWidth + GAP;
     const roomy = $('detail').classList.contains('roomy');
     const right = selected || gitView ? Math.min(innerWidth * .92, roomy ? Math.min(840, innerWidth * .6) : 360) + GAP : 0;
@@ -1464,7 +1470,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     else {
       const body = el('pre', {className: 'ide-diff', innerHTML: paintDiff(what.patch)});
       body.addEventListener('scroll', () => { what.scroll = body.scrollTop; });
-      panel.append(el('div', {className: 'ide', style: 'height:calc(100vh - 270px);margin-top:14px'}, body));
+      panel.append(el('div', {className: 'ide', style: 'height:calc(100vh - 270px - var(--chrome));margin-top:14px'}, body));
       requestAnimationFrame(() => { body.scrollTop = what.scroll || 0; });
     }
   }
@@ -1652,10 +1658,11 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   menu.addEventListener('click', () => {
     // The graph slides along with the panel, so what was in view stays in view.
     const before = seen().middle, from = aim || view;
-    document.body.classList.toggle('no-side');
+    menu.setAttribute('aria-expanded', String(!document.body.classList.toggle('no-side')));
     glide(from.x + seen().middle - before, from.y, from.k);
   });
   if (innerWidth < 760) document.body.classList.add('no-side');
+  menu.setAttribute('aria-expanded', String(!document.body.classList.contains('no-side')));
   const centreOfView = () => { const area = seen(); return [area.middle, area.centre]; };
   for (const [glyph, name, run] of [['+', TEXT.zoomIn, () => zoom(1.4, ...centreOfView(), true)],
                                     ['−', TEXT.zoomOut, () => zoom(1 / 1.4, ...centreOfView(), true)],

@@ -559,7 +559,7 @@ class PipelineTest(unittest.TestCase):
         try:
             address = app.serve(self.root)  # no graph yet, so it builds one first
             self.assertTrue((self.out / "graph.json").exists())
-            self.assertTrue(address.endswith("/?lang=es"))
+            self.assertTrue(address.endswith("/?lang=es&app=1"))
             with urllib.request.urlopen(address) as reply:
                 page = reply.read().decode("utf-8")
             self.assertIn(app.httpd.app.token, page)
