@@ -1,4 +1,5 @@
 """End-to-end test: a small folder with every kind of content goes in, a graph comes out."""
+import html
 import json
 import os
 import shutil
@@ -11,7 +12,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from linkednodes import annotations, cli, code, detect, gitinfo, hooks, pipeline, saved, server
+from linkednodes import annotations, cli, code, desktop, detect, gitinfo, hooks, pipeline, saved, server
 from linkednodes.query import Graph
 
 FILES = {
@@ -397,6 +398,44 @@ class PipelineTest(unittest.TestCase):
         self.assertFalse(written[1].exists())
         self.assertEqual(hooks.remove(self.root), [])
         self.assertIn("echo mine", written[0].read_text(encoding="utf-8"))
+
+    def test_desktop_window_serves_a_folder(self):
+        # The window itself needs a screen; what feeds it does not.
+        other, home = tempfile.TemporaryDirectory(), tempfile.TemporaryDirectory()
+        os.environ["LINKEDNODES_HOME"] = home.name  # keep the test out of the real settings
+        self.addCleanup(lambda: (os.environ.pop("LINKEDNODES_HOME", None), home.cleanup()))
+        self.assertEqual((desktop.recent(), desktop.settings()), ([], {}))
+        app = desktop.Desktop()
+        app.lang = "es"
+        self.assertIn("pywebview.api.choose()", app.welcome())
+        self.assertNotIn("Recientes", app.welcome())
+        try:
+            address = app.serve(self.root)  # no graph yet, so it builds one first
+            self.assertTrue((self.out / "graph.json").exists())
+            self.assertTrue(address.endswith("/?lang=es"))
+            with urllib.request.urlopen(address) as reply:
+                page = reply.read().decode("utf-8")
+            self.assertIn(app.httpd.app.token, page)
+            self.assertIn("get('lang')", page)
+            (Path(other.name) / "nota.md").write_text("# Otra carpeta\n", encoding="utf-8")
+            first = app.httpd
+            app.serve(Path(other.name))
+            self.assertEqual(app.root, Path(other.name).resolve())
+            self.assertIsNot(app.httpd, first)
+            # Both folders are remembered, newest first, and offered on the start page by position.
+            self.assertEqual(desktop.recent(), [Path(other.name).resolve(), self.root.resolve()])
+            desktop.remember(lang="en")
+            self.assertEqual((desktop.language(), len(desktop.recent())), ("en", 2))
+            start = app.welcome()
+            self.assertIn("pywebview.api.again(1)", start)
+            self.assertIn(html.escape(str(self.root.resolve())), start)
+            # A port that is taken is never shared: the next server moves to another one.
+            taken = server.bind(self.root, app.httpd.server_address[1])
+            self.assertNotEqual(taken.server_address[1], app.httpd.server_address[1])
+            taken.server_close()
+        finally:
+            app.close()
+            other.cleanup()
 
     def test_folder_without_git_has_no_git_data(self):
         self.answer_all()

@@ -65,6 +65,48 @@ The side panels slide over the graph instead of resizing it, so opening or closi
 one never redraws or clears the canvas; the camera moves so that what you were
 looking at stays in view.
 
+## Desktop window
+
+To use the graph as a program of its own, without a browser tab or a terminal:
+
+```
+pip install -e ".[app]"
+python -m linkednodes app .
+```
+
+It opens the same viewer, with editing, in a native window. The window is drawn by
+the web view the system already has (WebView2 on Windows), through pywebview, so no
+browser is bundled. The File menu opens another folder, building its graph first if
+it has none, and rebuilds the current one; the Language menu switches between
+Spanish and English. On Windows, `linkednodes-out/open-graph.ps1` opens this window
+when pywebview is installed and falls back to the browser when it is not.
+
+The window is light on disk, not on memory: the web view is the same engine as the
+Edge browser and uses about as much as one of its tabs.
+
+### As a program, without Python
+
+```
+pip install -e ".[app,build]"
+python packaging/build.py --install
+```
+
+This builds `dist/LinkedNodes/LinkedNodes.exe` with PyInstaller, a folder of about
+35 MB that runs on a Windows machine with no Python. `--install` copies it to
+`%LOCALAPPDATA%\Programs\LinkedNodes` and adds Desktop and Start Menu shortcuts;
+`--uninstall` removes them. Started on its own, the program opens the last folder
+used, or a start page to pick one. Opening a folder that has no graph builds one.
+
+What the program cannot do by itself is the reading: saying what notes, images and
+saved links are about is still Claude's part, through the skill, and the skill
+calls `python -m linkednodes`. A folder opened only from the program gets the
+structural graph: code, links between notes, saved items and git.
+
+The same executable runs any command without a window, for scripts on a machine
+with no Python: `LinkedNodes.exe refresh <folder>`. It prints nothing.
+
+It is not signed, so Windows may warn the first time it runs on another machine.
+
 ## Git
 
 When the folder is a git repository, the graph also carries what git knows. Apart
@@ -118,7 +160,8 @@ python -m linkednodes serve .
 ```
 
 On Windows, every build also writes `linkednodes-out/open-graph.ps1`, which does the
-same for that folder: right click it and choose "Run with PowerShell".
+same for that folder: right click it and choose "Run with PowerShell". Add `-Browser`
+to use the browser even when the desktop window is available.
 
 It opens the same viewer with three more tabs on every node:
 

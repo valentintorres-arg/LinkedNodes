@@ -1,3 +1,5 @@
 linkednodes-out/
 __pycache__/
 *.egg-info/
+build/
+dist/

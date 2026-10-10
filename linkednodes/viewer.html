@@ -257,8 +257,10 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   const $ = id => document.getElementById(id);
   const canvas = $('canvas'), ctx = canvas.getContext('2d'), stage = $('stage');
 
-  // ---- language: Spanish when the browser asks for it, English otherwise
-  const SPANISH = (navigator.language || 'en').toLowerCase().startsWith('es');
+  // ---- language: the one named in the address (the desktop window does that), or else
+  // Spanish when the browser asks for it and English otherwise
+  const SPANISH = (new URLSearchParams(location.search).get('lang') || navigator.language || 'en')
+    .toLowerCase().startsWith('es');
   const TEXT = SPANISH ? {
     search: 'Buscar un nodo', noMatches: 'Nada coincide', nodes: 'nodos', edges: 'relaciones',
     showing: 'visibles', mostConnected: 'más conectados de', filters: 'Filtros', kinds: 'Tipos de nodo',

@@ -195,10 +195,12 @@ description. Notes are files in `linkednodes-out/notes/`; corrections are in
 `node` print a node's note under `notes:`. Treat a note as the user's own word on
 that node: prefer it to what was inferred, and mention it when it answers the question.
 
-To let the user edit from the browser, tell them to run this in a terminal of
-their own, since it keeps running until stopped:
+To let the user edit, tell them to run one of these in a terminal of their own,
+since both keep running until closed. The first opens a desktop window and needs
+pywebview; the second uses the browser:
 
 ```
+python -m linkednodes app "<folder>"
 python -m linkednodes serve "<folder>"
 ```
 

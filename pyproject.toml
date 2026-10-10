@@ -13,6 +13,10 @@ authors = [{ name = "Valentín Torres" }]
 requires-python = ">=3.10"
 dependencies = ["networkx>=3.0"]
 
+[project.optional-dependencies]
+app = ["pywebview>=6"]  # the desktop window: pip install -e ".[app]"
+build = ["pyinstaller>=6", "pillow"]  # packaging/build.py, which makes LinkedNodes.exe
+
 [project.scripts]
 linkednodes = "linkednodes.cli:main"
 

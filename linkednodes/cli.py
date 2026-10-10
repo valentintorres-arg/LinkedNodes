@@ -1,4 +1,4 @@
-"""Command line entry point: linkednodes scan | build | serve | query | path | node | install."""
+"""Command line entry point: linkednodes scan | build | app | serve | query | changed | install."""
 from __future__ import annotations
 
 import argparse
@@ -162,6 +162,19 @@ def _serve(args) -> int:
     return 0
 
 
+def _app(args) -> int:
+    from . import desktop
+    windowed = sys.stdout is None  # started with pythonw, so there is no console to print to
+    try:
+        desktop.run(_root(args.path) if args.path else None)
+    except (SystemExit, Exception) as error:
+        if not windowed:
+            raise
+        desktop.report(error)
+        return 1
+    return 0
+
+
 def _install(args) -> int:
     base = Path.cwd() / ".claude" if args.project else Path.home() / ".claude"
     target = base / "skills" / "linkednodes" / "SKILL.md"
@@ -226,6 +239,10 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--no-open", action="store_true", help="do not open the browser")
     serve.set_defaults(run=_serve)
+
+    app = commands.add_parser("app", help="open the graph in a desktop window (needs pywebview)")
+    app.add_argument("path", nargs="?", help="folder to open; without it, the last one used")
+    app.set_defaults(run=_app)
 
     install = commands.add_parser("install", help="install the Claude Code skill")
     install.add_argument("--project", action="store_true",

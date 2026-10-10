@@ -189,25 +189,36 @@ class _Handler(BaseHTTPRequestHandler):
         self._handle("POST")
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+    # Windows lets a second server bind a port that is already in use, and then hands the
+    # requests to whichever it likes. Refusing makes a taken port an error, as it should be.
+    allow_reuse_address = os.name != "nt"
+
+
 def make_server(root: Path, port: int = 0) -> ThreadingHTTPServer:
     """Bind to 127.0.0.1 on the given port, or on any free port when it is 0."""
-    server = ThreadingHTTPServer(("127.0.0.1", port), _Handler)
-    server.daemon_threads = True
+    server = _Server(("127.0.0.1", port), _Handler)
     server.app = App(root, server.server_address[1])
     return server
 
 
-def serve(root: Path, port: int, open_browser: bool) -> None:
-    pipeline.render(root)  # fail now, with a clear message, if there is no graph yet
-    server = None
+def bind(root: Path, port: int) -> ThreadingHTTPServer:
+    """A server on the wanted port, or on one of the next few when it is taken."""
     for candidate in range(port, port + 20):
         try:
-            server = make_server(root, candidate)
-            break
+            return make_server(root, candidate)
         except OSError:
             continue
-    if server is None:
-        raise SystemExit(f"error: no free port between {port} and {port + 19}")
+    raise OSError(f"no free port between {port} and {port + 19}")
+
+
+def serve(root: Path, port: int, open_browser: bool) -> None:
+    pipeline.render(root)  # fail now, with a clear message, if there is no graph yet
+    try:
+        server = bind(root, port)
+    except OSError as error:
+        raise SystemExit(f"error: {error}")
     address = f"http://127.0.0.1:{server.server_address[1]}/"
     print(f"Serving the graph of {root} at {address}")
     print("Notes and node edits are saved in linkednodes-out. Press Ctrl+C to stop.")

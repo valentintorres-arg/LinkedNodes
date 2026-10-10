@@ -16,9 +16,10 @@ VIEWER_LIMIT = 4000  # nodes the browser view can lay out comfortably
 # It is saved with a byte order mark: Windows PowerShell reads a script without one as ANSI.
 LAUNCHER = "open-graph.ps1"
 LAUNCHER_SCRIPT = r"""# Opens this graph with editing: notes, node properties and the code behind each node.
+# It opens in a window of its own when pywebview is installed, and in the browser otherwise.
 # Run it with right click > "Run with PowerShell", or from a terminal:
 #   powershell -ExecutionPolicy Bypass -File open-graph.ps1
-param([int]$Port = 8765)
+param([int]$Port = 8765, [switch]$Browser)
 
 $folder = Split-Path -Parent $PSScriptRoot
 $spanish = (Get-Culture).Name -like 'es*'
@@ -38,6 +39,15 @@ if (-not $python) {
 if ($LASTEXITCODE -ne 0) {
     Say 'LinkedNodes is not installed for this Python. In the LinkedNodes folder, run: pip install -e .' 'LinkedNodes no está instalado para este Python. En la carpeta de LinkedNodes, ejecutá: pip install -e .'
     Leave 1
+}
+
+& $python.Source -c "import webview" 2>$null
+if ($LASTEXITCODE -eq 0 -and -not $Browser) {
+    # pythonw runs without a console, so this window can close and only the graph's stays.
+    $windowed = Join-Path (Split-Path (& $python.Source -c "import sys; print(sys.executable)")) 'pythonw.exe'
+    if (-not (Test-Path $windowed)) { $windowed = $python.Source }
+    Start-Process $windowed -ArgumentList @('-m', 'linkednodes', 'app', ('"{0}"' -f $folder))
+    exit 0
 }
 
 Say "Opening the graph of $folder" "Abriendo el grafo de $folder"
