@@ -7,8 +7,10 @@ something its own words are passed on.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
+import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
@@ -20,22 +22,24 @@ from .util import QUIET
 LISTED = 400  # files shown per group, and branches per kind
 LOG = 20
 REMOTE = 300  # seconds a fetch, pull or push may take
+CLONE = 1800
 
 
 class GitError(Exception):
     """git refused, or could not be asked. The message is the one to show."""
 
 
-def _run(root: Path, *args: str, ok: tuple[int, ...] = (0,), timeout: int = 120, chatter: bool = False) -> str:
+def _run(root: Path | None, *args: str, ok: tuple[int, ...] = (0,), timeout: int = 120, chatter: bool = False,
+         env: dict | None = None) -> str:
     """What git printed. With chatter, also what it said on the side, where push and pull report."""
     # Optional locks are left alone so that the watcher's status never gets in the way of
     # a git command in a terminal. Nothing may wait for a terminal either: a push that
     # needs a password has to fail here, where nobody could type one.
-    command = ["git", "-C", str(root), "--no-optional-locks", "--literal-pathspecs",
+    command = ["git", *(["-C", str(root)] if root else []), "--no-optional-locks", "--literal-pathspecs",
                "-c", "core.quotepath=false", *args]
     try:
         result = subprocess.run(command, capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL,
-                                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, **QUIET)
+                                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", **(env or {})}, **QUIET)
     except subprocess.TimeoutExpired:
         raise GitError(f"git {args[0]} took more than {timeout} seconds and was stopped")
     except OSError as error:
@@ -114,6 +118,34 @@ def _lines(root: Path, *args: str) -> list[str]:
 def _remote(root: Path) -> str:
     remotes = _lines(root, "remote")
     return "origin" if "origin" in remotes else next(iter(remotes), "")
+
+
+def origin(root: Path) -> str:
+    """The address of the remote called origin, or '' when the folder has none."""
+    return next(iter(_lines(root, "config", "--get", "remote.origin.url")), "")
+
+
+def clone(address: str, folder: Path, token: str = "", site: str = "https://github.com") -> None:
+    """Clone a repository into a folder that is not there yet.
+
+    A token is handed to git for this one command, through its environment: it is not on
+    the command line, and nothing of it is written into the clone. What the clone fetches
+    and pushes later goes with the credentials git itself has.
+    """
+    if not address.startswith(("https://", "http://")) or folder.exists():
+        raise GitError(f"cannot clone {address} into {folder}")
+    env = {}
+    if token:
+        count = int(os.environ.get("GIT_CONFIG_COUNT") or 0)
+        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        env = {"GIT_CONFIG_COUNT": str(count + 1), f"GIT_CONFIG_KEY_{count}": f"http.{site}/.extraheader",
+               f"GIT_CONFIG_VALUE_{count}": f"Authorization: Basic {basic}"}
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _run(None, "clone", "--quiet", "--", address, str(folder), timeout=CLONE, env=env)
+    except GitError:
+        shutil.rmtree(folder, ignore_errors=True)  # a clone that was stopped halfway is not left behind
+        raise
 
 
 def state(root: Path) -> dict | None:

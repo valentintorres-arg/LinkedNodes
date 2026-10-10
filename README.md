@@ -84,6 +84,31 @@ when pywebview is installed and falls back to the browser when it is not.
 The window is light on disk, not on memory: the web view is the same engine as the
 Edge browser and uses about as much as one of its tabs.
 
+### GitHub
+
+The window's start page (File, then GitHub repositories) has a "Sign in with GitHub"
+button. It shows a code and opens github.com, where you type the code and approve.
+From then on the start page lists the repositories your account owns, collaborates
+on or reaches through an organization, with a box to filter them. Click one to open
+it: a repository that is already on this computer, among the recent folders or
+cloned from here before, is opened where it is; any other is cloned first, into
+`LinkedNodes/owner/name` under your home folder. Another place can be named as
+`workspace` in the window's `settings.json`.
+
+- **The token** is kept in Windows Credential Manager, and on other systems in a file
+  that only you can read. It is never in the settings and never reaches a page. For a
+  clone it is handed to git for that one command; what the clone fetches and pushes
+  later goes with the credentials git itself has.
+- **The permission** asked for is `repo` and `read:org`: read and write on every
+  repository you can reach. That is what listing private repositories takes, and
+  GitHub has nothing narrower for this kind of sign-in. An organization may hide its
+  repositories until one of its owners approves LinkedNodes.
+- **Signing out** forgets the token on this computer. To make GitHub forget it too,
+  revoke LinkedNodes under Settings, Applications, Authorized OAuth Apps.
+- **Another registration** of the program with GitHub can be used by putting its
+  client id in the `LINKEDNODES_GITHUB_CLIENT` environment variable. It needs device
+  flow enabled, and no secret.
+
 ### As a program, without Python
 
 ```

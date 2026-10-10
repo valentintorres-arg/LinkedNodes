@@ -1,4 +1,5 @@
 """End-to-end test: a small folder with every kind of content goes in, a graph comes out."""
+import base64
 import html
 import json
 import os
@@ -6,13 +7,15 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.parse
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from linkednodes import annotations, cli, code, desktop, detect, gitinfo, gitops, hooks, pipeline, saved, server
+from linkednodes import annotations, cli, code, desktop, detect, github, gitinfo, gitops, hooks, pipeline, saved, server
 from linkednodes.query import Graph
 
 FILES = {
@@ -80,6 +83,66 @@ FILES = {
     ]),
     "package.json": json.dumps({"name": "x", "homepage": "https://example.com"}),
 }
+
+
+class FakeGitHub(BaseHTTPRequestHandler):
+    """Enough of github.com to sign in, list repositories and clone one over plain HTTP."""
+    token = "token-123"
+    files: Path  # bare repositories, served as the files they are
+    polls = 0
+    verdict: dict = {}  # what a sign-in is finally told
+    carried: list = []  # the Authorization header of every request git made
+
+    def log_message(self, *args):
+        pass
+
+    def answer(self, data, status=200):
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        here = f"http://{self.headers['Host']}"
+        if self.path == "/login/device/code":
+            self.answer({"device_code": "device", "user_code": "ABCD-1234", "interval": 0, "expires_in": 60,
+                         "verification_uri": here + "/login/device"})
+        elif self.path == "/login/oauth/access_token":
+            type(self).polls += 1  # the first time the code has not been typed yet
+            self.answer({"error": "authorization_pending"} if self.polls < 2 else self.verdict)
+        else:
+            self.answer({"message": "Not Found"}, 404)
+
+    def do_GET(self):
+        path = urllib.parse.urlsplit(self.path).path
+        here = f"http://{self.headers['Host']}"
+        if path.startswith("/api/"):
+            if self.headers.get("Authorization") != f"Bearer {self.token}":
+                self.answer({"message": "Bad credentials"}, 401)
+            elif path == "/api/user":
+                self.answer({"login": "ana", "name": "Ana <Pérez>", "avatar_url": "https://example.com/ana.png"})
+            elif path == "/api/user/repos":
+                self.answer([
+                    {"full_name": "ana/shop", "private": False, "description": "Prices & orders",
+                     "pushed_at": "2026-10-01T10:00:00Z", "clone_url": here + "/ana/shop.git"},
+                    {"full_name": "org/secret", "private": True, "description": None, "archived": True,
+                     "pushed_at": "2026-09-01T10:00:00Z", "clone_url": "https://elsewhere.example/org/secret.git"}])
+            else:
+                self.answer({"message": "Not Found"}, 404)
+            return
+        self.carried.append(self.headers.get("Authorization"))
+        file = (self.files / path.lstrip("/")).resolve()
+        if self.files.resolve() not in file.parents or not file.is_file():
+            return self.answer({"message": "Not Found"}, 404)
+        body = file.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
 
 class PipelineTest(unittest.TestCase):
@@ -520,6 +583,103 @@ class PipelineTest(unittest.TestCase):
         finally:
             app.close()
             other.cleanup()
+
+    def test_github_sign_in_and_repositories(self):
+        if not shutil.which("git"):
+            self.skipTest("git is not installed")
+        home, hub = tempfile.TemporaryDirectory(), tempfile.TemporaryDirectory()
+        state = Path(home.name)
+        os.environ["LINKEDNODES_HOME"] = home.name  # the token goes under a name of its own, away from a real one
+        before = (github.SITE, github.API, github.CLIENT_ID)
+
+        def restore():
+            github.forget(state)
+            github.SITE, github.API, github.CLIENT_ID = before
+            os.environ.pop("LINKEDNODES_HOME", None)
+            home.cleanup()
+            hub.cleanup()
+
+        self.addCleanup(restore)
+        github.CLIENT_ID = ""  # with no registration there is nothing to offer
+        self.assertNotIn("GitHub", desktop.Desktop().welcome())
+
+        def git(*args, at=self.root):
+            subprocess.run(["git", "-C", str(at), "-c", "user.name=Ana", "-c", "user.email=ana@example.com",
+                            "-c", "commit.gpgsign=false", *args], check=True, capture_output=True)
+
+        git("init", "-q", "-b", "main")
+        git("add", "-A")
+        git("commit", "-q", "-m", "first version")
+        bare = Path(hub.name) / "ana" / "shop.git"
+        git("clone", "-q", "--bare", str(self.root), str(bare))
+        git("update-server-info", at=bare)
+        FakeGitHub.files, FakeGitHub.polls, FakeGitHub.carried = Path(hub.name), 0, []
+        FakeGitHub.verdict = {"access_token": FakeGitHub.token, "scope": "repo"}
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), FakeGitHub)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(lambda: (httpd.shutdown(), httpd.server_close()))
+        site = f"http://127.0.0.1:{httpd.server_address[1]}"
+        github.SITE, github.API, github.CLIENT_ID = site, site + "/api", "client-id"
+        desktop.remember(workspace=str(state / "repos"), lang="en")
+
+        app, opened = desktop.Desktop(), []
+        app.browse = opened.append
+        self.assertFalse(app.asking)
+        self.assertIn("pywebview.api.signin()", app.welcome())
+        app.signin()  # the code is approved by the second time GitHub is asked
+        self.assertEqual((opened, FakeGitHub.polls), ([site + "/login/device"], 2))
+        self.assertEqual(github.load(state), FakeGitHub.token)
+        self.assertFalse((state / "settings.json").read_text(encoding="utf-8").count(FakeGitHub.token))
+        self.assertEqual((app.user["login"], [r["name"] for r in app.repos]), ("ana", ["ana/shop", "org/secret"]))
+        page = app.welcome()
+        self.assertIn("Ana &lt;Pérez&gt; (@ana)", page)
+        self.assertIn("pywebview.api.repo(1)", page)
+        self.assertIn("<i>private</i><i>archived</i>", page)
+        self.assertNotIn("on this computer", page)
+        self.assertNotIn(FakeGitHub.token, page)
+
+        # Opening a repository clones it into the workspace, once, with the token sent but not kept.
+        folder = app.fetch(0)
+        self.assertEqual(folder, state / "repos" / "ana" / "shop")
+        self.assertTrue((folder / "app" / "models.py").exists())
+        self.assertIn("Basic " + base64.b64encode(f"x-access-token:{FakeGitHub.token}".encode()).decode(), FakeGitHub.carried)
+        self.assertNotIn("extraheader", (folder / ".git" / "config").read_text(encoding="utf-8").lower())
+        asked = len(FakeGitHub.carried)
+        self.assertEqual((app.fetch(0), len(FakeGitHub.carried)), (folder, asked))
+        self.assertIn("<i>on this computer</i>", app.welcome())
+        for bad in (1, 2, "0", None):  # an address that is not GitHub's, and positions that name nothing
+            with self.assertRaises(ValueError):
+                app.fetch(bad)
+
+        # The next start finds the token, and with it the account and what is already cloned.
+        later = desktop.Desktop()
+        self.assertTrue(later.asking)
+        self.assertIn("Asking GitHub", later.welcome())
+        later.account()
+        self.assertEqual((later.asking, later.user["login"], later.local), (False, "ana", {"ana/shop": folder}))
+        # A token revoked on github.com signs the account out here and is forgotten.
+        FakeGitHub.token = "another"
+        self.addCleanup(lambda: setattr(FakeGitHub, "token", "token-123"))
+        later.account()
+        self.assertEqual((later.user, later.trouble, github.load(state)), (None, "", ""))
+        self.assertIn("pywebview.api.signin()", later.welcome())
+
+        # A sign-in that GitHub refuses says why; one that is given up says nothing; signing out forgets.
+        FakeGitHub.polls, FakeGitHub.verdict = 0, {"error": "access_denied", "error_description": "The user said no."}
+        app.signout()
+        app.signin()
+        self.assertEqual((app.user, app.code, app.trouble, github.load(state)), (None, None, "The user said no.", ""))
+        FakeGitHub.polls, FakeGitHub.verdict = -10 ** 6, {}
+        waiting = threading.Thread(target=app.signin)
+        waiting.start()
+        for _ in range(500):  # until the code is on show
+            if app.code:
+                break
+            time.sleep(.01)
+        self.assertIn("ABCD-1234", app.welcome())
+        app.cancel()
+        waiting.join(10)
+        self.assertEqual((waiting.is_alive(), app.code, app.trouble), (False, None, ""))
 
     def test_folder_without_git_has_no_git_data(self):
         self.answer_all()
