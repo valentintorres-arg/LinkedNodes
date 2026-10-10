@@ -102,7 +102,10 @@ def analyze(graph: nx.Graph, nodes: dict, edges: list[dict], communities: list[d
                 if nodes[nid]["kind"] == "package"][:8]
 
     # Connectors sit on many shortest paths: remove one and parts of the graph drift apart.
-    sample = min(len(graph), 300) or None
+    # The paths are counted from a sample of nodes, a smaller one in a large graph, where
+    # each costs more and this would otherwise be most of the time a build takes.
+    size = len(graph) + graph.number_of_edges()
+    sample = min(len(graph), 300, max(50, 500_000 // (size or 1))) or None
     between = nx.betweenness_centrality(graph, k=sample, seed=42) if graph.number_of_edges() else {}
     hubs = {g["id"] for g in gods[:5]}
     connectors = [brief(nid, score=round(score, 3)) for nid, score in

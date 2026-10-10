@@ -494,50 +494,82 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
       }
     }
   }
-  let repelK = 0, reach2 = 0, dragging = null;
-  function repel(a, b) {
-    let dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy;
-    if (d2 > reach2) return;
-    if (d2 < 1) { dx = rand() - .5; dy = rand() - .5; d2 = 1; }
-    const f = repelK * alpha / d2;
-    a.vx -= dx * f; a.vy -= dy * f; b.vx += dx * f; b.vy += dy * f;
-  }
-  function tick() {
-    const reach = 240 + S.distance * 2 + S.repel * 320;
-    repelK = 40 + S.repel * S.repel * 1600;
-    reach2 = reach * reach;
-    if (active.length <= 600) {
-      for (let i = 0; i < active.length; i++)
-        for (let j = i + 1; j < active.length; j++) repel(active[i], active[j]);
-    } else {  // large graphs: only compare nodes in neighbouring grid cells
-      const grid = new Map();
-      for (const n of active) {
-        const key = Math.floor(n.x / reach) + ',' + Math.floor(n.y / reach);
-        if (!grid.has(key)) grid.set(key, []);
-        grid.get(key).push(n);
-      }
-      for (const [key, list] of grid) {
-        const [gx, gy] = key.split(',').map(Number);
-        for (let dx = 0; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
-          if (dx === 0 && dy < 0) continue;
-          const other = dx === 0 && dy === 0 ? list : grid.get((gx + dx) + ',' + (gy + dy));
-          if (!other) continue;
-          for (let i = 0; i < list.length; i++)
-            for (let j = other === list ? i + 1 : 0; j < other.length; j++) repel(list[i], other[j]);
+  const STIFF = 1.5;  // the most a node's springs may add up to; a little over 2, and the steps stop converging
+  const NEAR = [0, 0, 1, 0, -1, 1, 0, 1, 1, 1];  // a cell, then those to its right and below: each pair is met once
+  let dragging = null;
+  // The repulsion is worked out on plain arrays of numbers: with a thousand nodes it is
+  // hundreds of thousands of pairs a step, and reading each from its node is what made it slow.
+  let X = new Float64Array(0), Y = X, FX = X, FY = X, order = new Int32Array(0), first = order;
+  function repel() {
+    const count = active.length, reach = 240 + S.distance * 2 + S.repel * 320, reach2 = reach * reach;
+    const force = (40 + S.repel * S.repel * 1600) * alpha;
+    if (X.length < count) {
+      X = new Float64Array(count); Y = new Float64Array(count); FX = new Float64Array(count); FY = new Float64Array(count);
+      order = new Int32Array(count);
+    }
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < count; i++) {
+      const x = X[i] = active[i].x, y = Y[i] = active[i].y;
+      FX[i] = FY[i] = 0;
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    // Nodes only repel within reach, so each is compared with those in its own cell of a
+    // grid and in the cells around it. One node dragged far away must not make the grid huge.
+    let size = reach, cols = Math.floor((x1 - x0) / size) + 1, rows = Math.floor((y1 - y0) / size) + 1;
+    while (cols * rows > 4096) { size *= 2; cols = Math.floor((x1 - x0) / size) + 1; rows = Math.floor((y1 - y0) / size) + 1; }
+    const cells = cols * rows;
+    if (first.length < cells + 2) first = new Int32Array(cells + 2); else first.fill(0, 0, cells + 2);
+    const cell = i => Math.floor((X[i] - x0) / size) + cols * Math.floor((Y[i] - y0) / size);
+    for (let i = 0; i < count; i++) first[cell(i) + 2]++;
+    for (let c = 0; c < cells; c++) first[c + 2] += first[c + 1];
+    for (let i = 0; i < count; i++) order[first[cell(i) + 1]++] = i;  // cell c now holds order[first[c]] up to first[c + 1]
+    for (let cy = 0; cy < rows; cy++) for (let cx = 0; cx < cols; cx++) {
+      const c = cy * cols + cx, end = first[c + 1];
+      if (first[c] === end) continue;
+      for (let step = 0; step < 10; step += 2) {
+        const ox = cx + NEAR[step], oy = cy + NEAR[step + 1];
+        if (ox < 0 || ox >= cols || oy >= rows) continue;
+        const other = oy * cols + ox, last = first[other + 1];
+        for (let p = first[c]; p < end; p++) {
+          const i = order[p], xi = X[i], yi = Y[i];
+          let fx = 0, fy = 0;
+          for (let q = step ? first[other] : p + 1; q < last; q++) {
+            const j = order[q];
+            let dx = X[j] - xi, dy = Y[j] - yi, d2 = dx * dx + dy * dy;
+            if (d2 > reach2) continue;
+            if (d2 < 1) { dx = rand() - .5; dy = rand() - .5; d2 = 1; }
+            const f = force / d2;
+            dx *= f; dy *= f;
+            fx -= dx; fy -= dy; FX[j] += dx; FY[j] += dy;
+          }
+          FX[i] += fx; FY[i] += fy;
         }
       }
     }
+  }
+  function tick() {
+    if (active.length) repel();
+    // A node with many links is pulled by all of them at once. Past a point, one step throws
+    // it further than it was and the next further still, until the layout has flown apart.
+    // So what a node takes from its springs together is capped: a hub drifts towards its
+    // neighbours, and they are the ones that come to it.
     const spring = .02 + S.link * .2;
+    for (const n of active) n.stiff = 0;
+    for (const e of activeEdges) {
+      e.k = spring * (.4 + .6 * e.score) / Math.sqrt(Math.min(e.s.live, e.t.live) || 1);
+      e.s.stiff += e.k; e.t.stiff += e.k;
+    }
     for (const e of activeEdges) {
       const dx = e.t.x - e.s.x, dy = e.t.y - e.s.y, d = Math.hypot(dx, dy) || 1;
-      const hub = Math.sqrt(Math.min(e.s.live, e.t.live) || 1);
-      const f = (d - S.distance) / d * spring * alpha * (.4 + .6 * e.score) / hub;
-      e.s.vx += dx * f; e.s.vy += dy * f; e.t.vx -= dx * f; e.t.vy -= dy * f;
+      const f = (d - S.distance) / d * e.k * alpha;
+      const fs = e.s.stiff > STIFF ? f * STIFF / e.s.stiff : f, ft = e.t.stiff > STIFF ? f * STIFF / e.t.stiff : f;
+      e.s.vx += dx * fs; e.s.vy += dy * fs; e.t.vx -= dx * ft; e.t.vy -= dy * ft;
     }
     const pull = S.center * .04 * alpha;
-    for (const n of active) {
-      n.vx = (n.vx - n.x * pull) * .82;
-      n.vy = (n.vy - n.y * pull) * .82;
+    for (let i = 0; i < active.length; i++) {
+      const n = active[i];
+      n.vx = (n.vx + FX[i] - n.x * pull) * .82;
+      n.vy = (n.vy + FY[i] - n.y * pull) * .82;
       if (n === dragging) continue;
       n.x += n.vx; n.y += n.vy;
     }
@@ -546,6 +578,16 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   function reheat() {
     alpha = Math.max(alpha, .5);
     if (still) { for (let i = 0; i < 200; i++) tick(); alpha = 0; }  // no animation was asked for
+    dirty = true;
+  }
+  // The first layout takes a few hundred steps. They are taken out of sight for as long as
+  // that is not felt as a wait; a large graph takes the rest on screen, a few to a frame,
+  // so it is seen coming together instead of leaving the page blank.
+  let owed = 0;
+  function settle(patience) {
+    const until = performance.now() + patience;
+    while (owed && (still || performance.now() < until)) { tick(); owed--; }
+    if (!owed) alpha = still ? 0 : Math.min(alpha, .12);
     dirty = true;
   }
 
@@ -1684,13 +1726,18 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   scatter();
   refilter();
   alpha = 1;
-  for (let i = 0; i < (nodes.length > 1500 ? 120 : 300); i++) tick();
-  alpha = still ? 0 : Math.min(alpha, .12);
+  owed = 300;
+  settle(250);
   new ResizeObserver(resize).observe(canvas);
   resize();
   fit(true);
+  const framed = Object.assign({}, view);
   (function frame() {
-    if (alpha > .02) { tick(); dirty = true; }
+    if (owed) {
+      settle(12);
+      // Once it has settled the camera frames it again, unless it has been moved meanwhile.
+      if (!owed && !aim && view.x === framed.x && view.y === framed.y && view.k === framed.k) fit();
+    } else if (alpha > .02) { tick(); dirty = true; }
     if (aim) {  // ease the camera towards where it was asked to go
       view.x += (aim.x - view.x) * .2; view.y += (aim.y - view.y) * .2; view.k += (aim.k - view.k) * .2;
       if (Math.abs(aim.x - view.x) < .5 && Math.abs(aim.y - view.y) < .5 && Math.abs(aim.k - view.k) < .002) {
