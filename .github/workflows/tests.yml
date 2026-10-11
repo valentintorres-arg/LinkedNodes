@@ -26,4 +26,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -e .
-      - run: python -m unittest discover -s tests -v
+      - name: Run the tests
+        shell: python
+        run: |
+          # Each failure is also written as an annotation, so the run's page says what broke.
+          import sys, unittest
+          result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover("tests"))
+          for test, trace in result.failures + result.errors:
+              print(f"::error title={test.id().split('.')[-1]}::{trace.strip().splitlines()[-1][:900]}")
+          sys.exit(not result.wasSuccessful())

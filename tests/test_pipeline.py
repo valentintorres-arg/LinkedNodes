@@ -972,11 +972,14 @@ class ViewerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
             page = Path(folder) / "graph.html"
             page.write_text(pipeline._viewer("test", data) + self.COUNT, encoding="utf-8")
-            shown = subprocess.run(
-                [program, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
-                 f"--user-data-dir={Path(folder) / 'profile'}", "--window-size=1200,800",
-                 "--virtual-time-budget=5000", "--dump-dom", page.as_uri()],
-                capture_output=True, timeout=180).stdout.decode("utf-8", "replace")
+            command = [program, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+                       "--no-default-browser-check", "--use-mock-keychain", "--disable-extensions",
+                       f"--user-data-dir={Path(folder) / 'profile'}", "--window-size=1200,800",
+                       "--virtual-time-budget=5000", "--dump-dom", page.as_uri()]
+            try:
+                shown = subprocess.run(command, capture_output=True, timeout=120).stdout.decode("utf-8", "replace")
+            except subprocess.TimeoutExpired as late:  # say what it was doing, rather than only that it was slow
+                self.fail(f"{program} did not finish: {(late.stderr or b'')[-400:].decode('utf-8', 'replace')}")
         self.assertIn('data-painted="', shown, "the page did not run to the end")
         return int(shown.split('data-painted="', 1)[1].split('"', 1)[0])
 
