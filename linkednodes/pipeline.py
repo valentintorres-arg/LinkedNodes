@@ -113,11 +113,20 @@ def render(root: Path, edit: dict | None = None) -> str:
     return _viewer(root.name, data, edit)
 
 
-def _viewer(title: str, data: dict, edit: dict | None = None) -> str:
+def shown(root: Path, edit: dict | None = None) -> dict:
+    """What the viewer draws of the graph on disk. A page that is open asks for it again
+    when the graph has been built again, and takes it in without loading itself anew."""
+    data = read_json(root / detect.OUT_DIR / "graph.json")
+    if data is None:
+        raise FileNotFoundError(f"no graph in {root / detect.OUT_DIR}; run 'linkednodes build' first")
+    return _shown(root.name, data, edit)
+
+
+def _shown(title: str, data: dict, edit: dict | None = None) -> dict:
     nodes = [{**n, "family": graph.family(n["kind"])}
              for n in sorted(data["nodes"], key=lambda n: -n["degree"])[:VIEWER_LIMIT]]
     kept = {n["id"] for n in nodes}
-    payload = {
+    return {
         "title": title,
         "edit": edit,
         "git": data.get("git"),
@@ -126,8 +135,11 @@ def _viewer(title: str, data: dict, edit: dict | None = None) -> str:
         "edges": [e for e in data["edges"] if e["source"] in kept and e["target"] in kept],
         "communities": [{k: c[k] for k in ("id", "label", "size")} for c in data["communities"]],
     }
+
+
+def _viewer(title: str, data: dict, edit: dict | None = None) -> str:
     # Escaping "<" keeps file contents from closing the script tag or opening a new one.
-    blob = json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
+    blob = json.dumps(_shown(title, data, edit), ensure_ascii=False).replace("<", "\\u003c")
     template = resources.files("linkednodes").joinpath("viewer.html").read_text(encoding="utf-8")
     return template.replace("__TITLE__", title.replace("<", "")).replace("__DATA__", blob)
 

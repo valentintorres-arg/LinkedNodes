@@ -369,7 +369,8 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(call("POST", "/api/rebuild", {})[1]["pending"], 0)
         # Outside a repository there is no git to show, to follow or to drive.
         self.assertEqual(call("GET", "/api/git")[1], {"git": None, "repo": None})
-        self.assertEqual(call("GET", "/api/watch")[1], {"stamp": None})
+        quiet = call("GET", "/api/watch")[1]
+        self.assertEqual((quiet["stamp"], quiet["built"], len(quiet["beat"])), (None, 0, 40))
         self.assertEqual(call("POST", "/api/repo", {"do": "stage"})[0], 409)
         # A rebuild asked for in the page is done on the side, and watched from a page of its own.
         self.assertEqual(call("GET", "/api/progress")[1]["state"]["step"], "done")  # none yet: back to the graph
@@ -569,6 +570,27 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(gitops.fingerprint(self.root), stamp)
         threading.Timer(0.3, lambda: models.write_text("# otra vez\n", encoding="utf-8")).start()
         self.assertNotEqual(call("GET", f"/api/watch?seen={stamp}")[1]["stamp"], stamp)
+        # A graph built by another program is told to the page, which then loads it; one that
+        # this server built itself, for a note or a rebuild asked of it, is not.
+        seen = call("GET", "/api/watch")[1]
+        self.assertEqual(seen["built"], 0)
+        call("PUT", "/api/note", {"id": "code:app/models.py::Order", "text": "Una nota."})
+        self.assertEqual(call("GET", "/api/watch")[1]["built"], 0)
+        time.sleep(.05)
+        pipeline.build(self.root)  # as a hook or an assistant would, outside this server
+        after = call("GET", f"/api/watch?seen={urllib.parse.quote(seen['stamp'])}&built=0")[1]
+        self.assertEqual(after["built"], 1)
+        # The page builds the graph again when the project's files change, not when a note beside it does:
+        # the answer it goes by reads no file under linkednodes-out. It is told at once, and takes the
+        # graph that a rebuild hands back, or asks for it.
+        self.assertEqual(after["beat"], seen["beat"])  # only a note was written since
+        (self.root / "app" / "nuevo.py").write_text("def nuevo():\n    return 1\n", encoding="utf-8")
+        changed = call("GET", f"/api/watch?seen={urllib.parse.quote(after['stamp'])}&built=1&beat={seen['beat']}")[1]
+        self.assertNotEqual(changed["beat"], seen["beat"])
+        grown = call("POST", "/api/rebuild", {"graph": True})[1]["graph"]
+        self.assertIn("nuevo", [node["label"] for node in grown["nodes"]])
+        self.assertEqual(call("GET", "/api/graph")[1]["graph"]["nodes"], grown["nodes"])
+        self.assertEqual(call("GET", "/api/watch")[1]["built"], 1)  # told once, not at every look
 
     def test_desktop_window_serves_a_folder(self):
         # The window itself needs a screen; what feeds it does not.

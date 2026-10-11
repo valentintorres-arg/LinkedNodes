@@ -197,6 +197,15 @@ committed:
   an agent change it, and within a second or two the list, the highlight in the
   graph and the diff on show are up to date. A file open in the Code tab is read
   again from disk, unless it has edits of yours that this would lose.
+- **The graph follows too.** When a file of the project is added, changed or
+  removed, the graph is built again and the page takes it in where it stands, without
+  loading again: what was on show stays where it was, and each new file, then each
+  function in it, grows into place one after another. In a small project that is
+  about a second after the file is saved; a large one takes as long as its build
+  does. The camera goes with the graph as it spreads, until you move it yourself. A
+  graph built by another program, a hook after a commit or an assistant at work, is
+  taken in the same way. Display → "Rebuild the graph when the files change" turns
+  the rebuilding off. This works in any folder, repository or not.
 - **Diffs.** Click a changed file to see its diff beside the graph, staged or not,
   and a commit in the list of the latest ones to see what it changed.
 - **Stage and commit.** `+` and `−` move a file in and out of the commit, or all of

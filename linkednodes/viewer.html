@@ -39,6 +39,10 @@ canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block
 /* The chevron sits over the panel it folds away, and turns to point at where the panel will go. */
 #menu svg { width: 14px; height: 14px; display: block; margin: auto; transition: transform .34s var(--ease); }
 body.no-side #menu svg { transform: rotate(180deg); }
+/* A file that has just appeared in the list of changes slides in; the others stay still. */
+@keyframes arrive { from { opacity: 0; transform: translateY(-8px); } }
+li.arrive { animation: arrive .38s var(--ease); }
+@media (prefers-reduced-motion: reduce) { li.arrive { animation: none; } }
 #stats, .tag, summary, h3, .count {
   font: 500 10px/1.2 var(--sans); text-transform: uppercase; letter-spacing: .11em;
 }
@@ -300,7 +304,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     showing: 'visibles', mostConnected: 'más conectados de', filters: 'Filtros', kinds: 'Tipos de nodo',
     minDegree: 'Conexiones mínimas', inferred: 'Relaciones inferidas', groups: 'Grupos', colorBy: 'Color según',
     byCommunity: 'comunidad', byKind: 'tipo', communities: 'Comunidades', display: 'Apariencia',
-    arrows: 'Flechas', labels: 'Etiquetas', nodeSize: 'Tamaño de los nodos', linkWidth: 'Grosor de las relaciones',
+    follow: 'Reconstruir el grafo cuando cambian los archivos', arrows: 'Flechas', labels: 'Etiquetas', nodeSize: 'Tamaño de los nodos', linkWidth: 'Grosor de las relaciones',
     forces: 'Fuerzas', center: 'Fuerza hacia el centro', repel: 'Repulsión entre nodos', link: 'Fuerza de las relaciones',
     distance: 'Longitud de las relaciones', reset: 'Restablecer ajustes', relayout: 'Reordenar',
     hint: 'Rueda para acercar, arrastrar para mover, clic en un nodo para ver sus conexiones',
@@ -342,7 +346,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     showing: 'shown', mostConnected: 'most connected of', filters: 'Filters', kinds: 'Node kinds',
     minDegree: 'Minimum connections', inferred: 'Inferred edges', groups: 'Groups', colorBy: 'Colour by',
     byCommunity: 'community', byKind: 'kind', communities: 'Communities', display: 'Display',
-    arrows: 'Arrows', labels: 'Labels', nodeSize: 'Node size', linkWidth: 'Link thickness',
+    follow: 'Rebuild the graph when the files change', arrows: 'Arrows', labels: 'Labels', nodeSize: 'Node size', linkWidth: 'Link thickness',
     forces: 'Forces', center: 'Centre force', repel: 'Repel force', link: 'Link force',
     distance: 'Link distance', reset: 'Reset settings', relayout: 'Rearrange',
     hint: 'Scroll to zoom, drag to pan, click a node to see its connections',
@@ -407,7 +411,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
 
   // ---- settings, kept between visits
   const DEFAULTS = {center: .35, repel: .5, link: .5, distance: 70, nodeSize: 1, linkWidth: 1,
-                    labels: .55, arrows: false, inferred: true, minDegree: 0, colorBy: 'community'};
+                    labels: .55, arrows: false, inferred: true, minDegree: 0, colorBy: 'community', follow: true};
   const STORE = 'linkednodes-viewer';
   const S = Object.assign({}, DEFAULTS);
   try {
@@ -419,26 +423,71 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   }
 
   // ---- data
-  const nodes = DATA.nodes.map(n => Object.assign({}, n, {
-    x: 0, y: 0, vx: 0, vy: 0, r: 4, links: [], live: 0, rank: 0, key: fold(n.label), where: fold(n.source_file || ''),
-  }));
-  const byId = new Map(nodes.map(n => [n.id, n]));
-  const edges = [];
-  for (const e of DATA.edges) {
-    const s = byId.get(e.source), t = byId.get(e.target);
-    if (!s || !t) continue;
-    const link = Object.assign({}, e, {s, t});
-    edges.push(link);
-    s.links.push({other: t, link, out: true});
-    t.links.push({other: s, link, out: false});
+  const nodes = [], edges = [], byId = new Map(), communityLabel = new Map(), hue = new Map();
+  let communities = [];
+  // What the page itself keeps on a node; everything else on it comes from the graph.
+  const OURS = new Set(['x', 'y', 'vx', 'vy', 'r', 'links', 'live', 'rank', 'key', 'where', 'color', 'born', 'stiff']);
+  // Takes a graph in: the first one, or a newer one of the same folder. A node that is still
+  // there stays the same object, where it is; the ones that are new are returned.
+  function take(data) {
+    const had = new Map(byId), before = new Map(nodes.map(n => [n.id, hueOf(n.community)])), fresh = [];
+    nodes.length = edges.length = 0;
+    byId.clear();
+    for (const raw of data.nodes) {
+      let n = had.get(raw.id);
+      if (n) {
+        for (const key of Object.keys(n)) if (!OURS.has(key) && !(key in raw)) delete n[key];  // a note that was removed, say
+        Object.assign(n, raw);
+        n.links = [];
+      } else {
+        n = Object.assign({}, raw, {x: 0, y: 0, vx: 0, vy: 0, r: 4, links: [], live: 0, rank: 0, born: 0});
+        fresh.push(n);
+      }
+      n.key = fold(n.label);
+      n.where = fold(n.source_file || '');
+      nodes.push(n);
+      byId.set(n.id, n);
+    }
+    for (const e of data.edges) {
+      const s = byId.get(e.source), t = byId.get(e.target);
+      if (!s || !t) continue;
+      const link = Object.assign({}, e, {s, t});
+      edges.push(link);
+      s.links.push({other: t, link, out: true});
+      t.links.push({other: s, link, out: false});
+    }
+    communities = data.communities;
+    communityLabel.clear();
+    for (const c of communities) communityLabel.set(c.id, c.label);
+    // A community is numbered by its size, so the numbers move when the graph grows. Each one
+    // keeps the colour most of its nodes had, so that nothing changes colour for no reason.
+    const votes = new Map(), taken = new Set();
+    for (const n of nodes) {
+      const was = before.get(n.id);
+      if (n.community == null || was == null) continue;
+      if (!votes.has(n.community)) votes.set(n.community, new Map());
+      votes.get(n.community).set(was, (votes.get(n.community).get(was) || 0) + 1);
+    }
+    hue.clear();
+    for (const c of communities) {  // largest first, as they come
+      const wanted = [...(votes.get(c.id) || [])].sort((a, b) => b[1] - a[1]).map(([index]) => index);
+      let index = wanted.find(candidate => !taken.has(candidate));
+      if (index == null) for (index = 0; taken.has(index); index++);
+      taken.add(index);
+      hue.set(c.id, index);
+    }
+    DATA.total = data.total;
+    return fresh;
   }
-  const communityLabel = new Map(DATA.communities.map(c => [c.id, c.label]));
   const PALETTE = ['#b9a8ff', '#8fb8de', '#9fd3c7', '#e6c58f', '#e39a9a', '#d5d8dd', '#a7c98b', '#d6a5d6',
                    '#7fc4d9', '#f0e3a1', '#c9a27e', '#9aa7ff', '#e0b3a0', '#8fd0a8'];
   const FAMILY_COLOR = {code: '#8fb8de', concepts: '#e6c58f', notes: '#9fd3c7', images: '#d6a5d6', saved: '#e39a9a'};
-  const communityColor = id => id == null ? '#6c7076' : PALETTE[id % PALETTE.length];
+  const hueOf = id => id == null ? null : hue.has(id) ? hue.get(id) : id;
+  const communityColor = id => id == null ? '#6c7076' : PALETTE[hueOf(id) % PALETTE.length];
+  take(DATA);
 
   const view = {x: 0, y: 0, k: 1};
+  let own = false;  // the reader has moved the camera, so it is theirs: until then it keeps the graph framed
   const hiddenKinds = new Set();
   let isolated = null, hover = null, selected = null, hops = 0, local = null, lit = null, notedOnly = false;
   let active = nodes, activeEdges = edges, alpha = 1, dirty = true, aim = null;
@@ -509,6 +558,32 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
         n.vx = n.vy = 0;
       }
     }
+  }
+  const POP = 420, RING = 1300;  // milliseconds a new node takes to grow to its size, and its ring to fade
+  let news = 0;  // until when something is still arriving, so the canvas is drawn again every frame
+  const arrival = n => n.born ? Math.min(1, Math.max(0, (performance.now() - n.born) / POP)) : 1;
+  const swell = t => t >= 1 ? 1 : 1 + 2.4 * Math.pow(t - 1, 3) + 1.4 * Math.pow(t - 1, 2);  // past its size, then back
+  // New nodes of a graph that was already on show: each starts beside what it is linked to,
+  // and they come in one after another, a file and then what it holds, so they are seen arriving.
+  function welcome(fresh) {
+    const waiting = new Set(fresh);
+    for (let pass = 0; pass < 4 && waiting.size; pass++)
+      for (const n of [...waiting]) {
+        const near = n.links.map(link => link.other).filter(other => !waiting.has(other));
+        if (!near.length && pass < 3) continue;  // nothing it is linked to has a place yet
+        const middle = near.length ? near : nodes.filter(other => !waiting.has(other));
+        const span = near.length ? 70 : 260;
+        n.x = middle.reduce((sum, other) => sum + other.x, 0) / (middle.length || 1) + (rand() - .5) * span;
+        n.y = middle.reduce((sum, other) => sum + other.y, 0) / (middle.length || 1) + (rand() - .5) * span;
+        waiting.delete(n);
+      }
+    if (still) return;  // no animation was asked for: they are simply there
+    const container = n => ['file', 'doc', 'image', 'folder'].includes(n.kind) ? 0 : 1;
+    const order = [...fresh].sort((a, b) => (a.source_file || '').localeCompare(b.source_file || '')
+      || container(a) - container(b) || (a.line || 0) - (b.line || 0));
+    const now = performance.now(), gap = Math.min(85, 1600 / order.length);
+    order.forEach((n, index) => { n.born = now + index * gap; });
+    news = now + order.length * gap + RING;
   }
   const STIFF = 1.5;  // the most a node's springs may add up to; a little over 2, and the steps stop converging
   const NEAR = [0, 0, 1, 0, -1, 1, 0, 1, 1, 1];  // a cell, then those to its right and below: each pair is met once
@@ -722,12 +797,21 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     // Selecting or searching dims the rest, but never so far that the graph seems gone.
     const dim = selected || lit || marked ? .34 : .5;
     ctx.globalAlpha = focus || lit || marked ? .5 : 1;
+    const base = ctx.globalAlpha, coming = [];
     ctx.beginPath();
     for (const e of activeEdges) {
       if (e.s === focus || e.t === focus) continue;
+      if (e.s.born || e.t.born) { coming.push(e); continue; }
       ctx.moveTo(e.s.x, e.s.y); ctx.lineTo(e.t.x, e.t.y);
     }
     ctx.stroke();
+    for (const e of coming) {  // a link shows once both its ends are there, as the later one grows
+      const there = Math.min(arrival(e.s), arrival(e.t));
+      if (!there) continue;
+      ctx.globalAlpha = base * there;
+      ctx.beginPath(); ctx.moveTo(e.s.x, e.s.y); ctx.lineTo(e.t.x, e.t.y); ctx.stroke();
+    }
+    ctx.globalAlpha = base;
     if (S.arrows && k > .3) {
       ctx.beginPath();
       for (const e of activeEdges) if (e.s !== focus && e.t !== focus) arrowHead(e);
@@ -746,10 +830,23 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
       }
     }
 
+    const now = performance.now();
     for (const n of active) {
+      let size = 1;
+      if (n.born) {  // a node that is arriving: nothing yet, then it grows a little past its size and back
+        const age = now - n.born;
+        if (age <= 0) continue;
+        if (age >= RING) n.born = 0;
+        else {
+          size = swell(age / POP);
+          ctx.globalAlpha = (1 - age / RING) * .9;
+          ctx.strokeStyle = n.color; ctx.lineWidth = 1.6 / k;
+          ctx.beginPath(); ctx.arc(n.x, n.y, n.r + 3 / k + 16 * (age / RING) / k, 0, 6.2832); ctx.stroke();
+        }
+      }
       ctx.globalAlpha = faded(n) ? dim : 1;
       ctx.fillStyle = n.color;
-      ctx.beginPath(); ctx.arc(n.x, n.y, n.r, 0, 6.2832); ctx.fill();
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.r * size, 0, 6.2832); ctx.fill();
       ctx.strokeStyle = theme.bg; ctx.lineWidth = 1 / k; ctx.stroke();  // keeps touching nodes apart
       if (n === selected || (lit && lit.has(n) && !focus)) {
         ctx.strokeStyle = n === selected ? theme.ink : theme['accent-soft'];
@@ -780,7 +877,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     const wanted = [];
     for (const n of active) {
       const sx = n.x * k + view.x, sy = n.y * k + view.y, sr = n.r * k;
-      if (sx < -200 || sx > w + 20 || sy < -20 || sy > h + 20 || (faded(n) && n !== focus)) continue;
+      if (sx < -200 || sx > w + 20 || sy < -20 || sy > h + 20 || (faded(n) && n !== focus) || !arrival(n)) continue;
       const forced = n === focus || n === selected;
       const related = (near && near.size <= 80 && near.has(n)) || (!focus && lit && lit.size <= 80 && lit.has(n))
         || (marked && marked.size <= 80 && marked.has(n));
@@ -807,7 +904,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     const x = (event.clientX - box.left - view.x) / view.k, y = (event.clientY - box.top - view.y) / view.k;
     for (let i = active.length - 1; i >= 0; i--) {
       const n = active[i];
-      if (Math.hypot(n.x - x, n.y - y) <= n.r + 4 / view.k) return n;
+      if (arrival(n) && Math.hypot(n.x - x, n.y - y) <= n.r + 4 / view.k) return n;
     }
     return null;
   }
@@ -833,6 +930,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
       if (!still) alpha = Math.max(alpha, .15);
     } else if (panning) {
       view.x += dx; view.y += dy;
+      own = true;
     }
     dirty = true;
   });
@@ -846,6 +944,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     const box = canvas.getBoundingClientRect();
     aim = null;
     zoom(Math.exp(-event.deltaY * .0015), event.clientX - box.left, event.clientY - box.top);
+    own = true;
   }, {passive: false});
 
   // ---- selection and the detail panel
@@ -1431,6 +1530,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   branchField.addEventListener('keydown', event => { if (event.key === 'Enter') branchOff(); });
   baseField.addEventListener('keydown', event => { if (event.key === 'Enter') compare(); });
 
+  let listed = null, listing = new Set();  // the files the list showed last time, and shows this time
   function fileGroup(box, staged) {
     const files = staged ? REPO.staged : REPO.unstaged, total = staged ? REPO.counts.staged : REPO.counts.unstaged;
     if (!total) return;
@@ -1446,7 +1546,9 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
       const flip = el('button', {className: 'btn small', textContent: staged ? '−' : '+', title: staged ? TEXT.unstage : TEXT.stage,
                                  onclick: () => repo({do: staged ? 'unstage' : 'stage', paths: [path]}, () => '')});
       flip.setAttribute('aria-label', `${flip.title} ${path}`);
-      list.append(el('li', {className: 'pair'}, open, flip));
+      const mark = (staged ? 's:' : 'u:') + path;
+      list.append(el('li', {className: listed && !listed.has(mark) ? 'pair arrive' : 'pair'}, open, flip));
+      listing.add(mark);
     }
     box.append(list);
     const hidden = total - Object.keys(files).length;
@@ -1493,7 +1595,8 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     box.parentElement.hidden = !GIT;
     if (!GIT) return;
     box.replaceChildren();
-    if (EDIT && REPO) workPanel(box);
+    listing = new Set();
+    if (EDIT && REPO) { workPanel(box); listed = listing; }
     else box.append(el('p', {className: 'muted', textContent: `${TEXT.branch} ${GIT.branch || '?'}, commit ${GIT.head || '?'}`}));
     const files = Object.keys(GIT.changed || {}).length, base = GIT.base || 'HEAD';
     if (EDIT) {
@@ -1604,14 +1707,56 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
       else { delete draft.source; delete draft.code; }
     }
   }
+  // A newer graph of the folder on show. Everything that is still there stays as it is, where
+  // it is, selected or open as it was; what is new arrives, and what is gone leaves.
+  function renew(data) {
+    const heat = alpha, fresh = take(data);
+    if (selected && !byId.has(selected.id)) select(null);
+    hover = dragging = null;
+    if (isolated != null && !communityLabel.has(isolated)) isolated = null;
+    if (local && selected) local = neighbourhood(selected, hops);
+    welcome(fresh);
+    showKinds();
+    showCommunities();
+    resizeNodes();
+    recolor();
+    refilter();
+    // Enough movement to make room for what arrived, and no more: the rest should hardly stir.
+    if (!still) alpha = Math.max(heat, fresh.length ? .3 : .05);
+    if (search.value.trim()) runSearch();
+    applyGit(data.git || null);
+    refreshGit();
+    if (!own) reframe = true;
+  }
+  // With the folder being followed, the graph follows too. A moment after the project's
+  // files stop changing it is built again and taken in, so that what is written into the
+  // folder shows up as nodes almost as it is saved, without anybody asking.
+  let growing = false, stale = false, lull = 0;
+  function regrow() {
+    if (!S.follow) return;
+    clearTimeout(lull);
+    lull = setTimeout(async () => {
+      if (growing) { stale = true; return; }  // files changed again while it was being built
+      growing = true;
+      let reply = null;
+      try { reply = await api('POST', '/api/rebuild', {graph: true}); } catch (error) { report(gitStatus, error.message, true); }
+      growing = false;
+      if (reply) renew(reply.graph);
+      if (stale) { stale = false; regrow(); }
+    }, 150);
+  }
   async function watch() {
-    let stamp = '';
+    let stamp = '', built = '', beat = '';
     for (;;) {
       try {
-        const reply = await api('GET', '/api/watch?seen=' + encodeURIComponent(stamp));
-        if (reply.stamp == null) return;  // not a repository, so there is nothing to follow
-        if (stamp && reply.stamp !== stamp) await follow();
-        stamp = reply.stamp;
+        const reply = await api('GET', `/api/watch?seen=${encodeURIComponent(stamp)}&built=${built}&beat=${beat}`);
+        // Built again by another program, a hook after a commit or an assistant at work: taken in as well.
+        if (built !== '' && reply.built !== built && !growing) renew((await api('GET', '/api/graph')).graph);
+        built = reply.built;
+        if (beat && reply.beat !== beat) regrow();  // first, as it is what takes longest
+        if (stamp && (reply.stamp || '') !== stamp) await follow();
+        stamp = reply.stamp || '';
+        beat = reply.beat;
       } catch (error) { await new Promise(resume => setTimeout(resume, 4000)); }
     }
   }
@@ -1690,21 +1835,26 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
 
   const filters = $('filters');
   filters.append(el('h3', {textContent: TEXT.kinds}));
-  const kinds = new Map();
-  for (const n of nodes) kinds.set(n.kind, (kinds.get(n.kind) || 0) + 1);
   const kindOptions = el('datalist', {id: 'kind-options'}), kindChips = el('div', {className: 'chips'});
   filters.append(kindChips);
-  for (const [kind, count] of [...kinds].sort((a, b) => b[1] - a[1])) {
-    const chip = el('button', {className: 'chip', onclick: () => {
-      const on = hiddenKinds.delete(kind);
-      if (!on) hiddenKinds.add(kind);
-      chip.setAttribute('aria-pressed', String(on));
-      refilter();
-    }}, el('span', {textContent: kindName(kind)}), el('span', {className: 'count', textContent: number(count)}));
-    chip.setAttribute('aria-pressed', 'true');
-    kindChips.append(chip);
-    kindOptions.append(el('option', {value: kind}));
+  function showKinds() {
+    const kinds = new Map();
+    for (const n of nodes) kinds.set(n.kind, (kinds.get(n.kind) || 0) + 1);
+    kindChips.replaceChildren();
+    kindOptions.replaceChildren();
+    for (const [kind, count] of [...kinds].sort((a, b) => b[1] - a[1])) {
+      const chip = el('button', {className: 'chip', onclick: () => {
+        const on = hiddenKinds.delete(kind);
+        if (!on) hiddenKinds.add(kind);
+        chip.setAttribute('aria-pressed', String(on));
+        refilter();
+      }}, el('span', {textContent: kindName(kind)}), el('span', {className: 'count', textContent: number(count)}));
+      chip.setAttribute('aria-pressed', String(!hiddenKinds.has(kind)));
+      kindChips.append(chip);
+      kindOptions.append(el('option', {value: kind}));
+    }
   }
+  showKinds();
   slider(filters, 'minDegree', 0, 12, 1, refilter);
   toggle(filters, 'inferred', refilter);
   const noted = el('input', {type: 'checkbox'});
@@ -1724,19 +1874,23 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   groups.append(el('label', {className: 'check'}, el('span', {textContent: TEXT.colorBy}), colorBy),
     el('h3', {textContent: TEXT.communities}));
   const communityList = el('ul');
-  for (const c of DATA.communities) {
-    const button = el('button', {className: 'item', onclick: () => {
-      isolated = isolated === c.id ? null : c.id;
-      for (const other of communityList.querySelectorAll('button'))
-        other.setAttribute('aria-pressed', String(other === button && isolated != null));
-      refilter();
-      setTimeout(fit, still ? 0 : 450);
-    }}, el('span', {className: 'dot', style: 'background:' + communityColor(c.id)}),
-       el('span', {className: 'grow', textContent: c.label}),
-       el('span', {className: 'count', textContent: number(c.size)}));
-    button.setAttribute('aria-pressed', 'false');
-    communityList.append(el('li', null, button));
+  function showCommunities() {
+    communityList.replaceChildren();
+    for (const c of communities) {
+      const button = el('button', {className: 'item', onclick: () => {
+        isolated = isolated === c.id ? null : c.id;
+        for (const other of communityList.querySelectorAll('button'))
+          other.setAttribute('aria-pressed', String(other === button && isolated != null));
+        refilter();
+        setTimeout(fit, still ? 0 : 450);
+      }}, el('span', {className: 'dot', style: 'background:' + communityColor(c.id)}),
+         el('span', {className: 'grow', textContent: c.label}),
+         el('span', {className: 'count', textContent: number(c.size)}));
+      button.setAttribute('aria-pressed', String(isolated === c.id));
+      communityList.append(el('li', null, button));
+    }
   }
+  showCommunities();
   groups.append(communityList);
 
   const display = $('display');
@@ -1744,6 +1898,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   slider(display, 'nodeSize', .3, 3, .01, resizeNodes);
   slider(display, 'linkWidth', .2, 4, .01, redraw);
   toggle(display, 'arrows', redraw);
+  if (EDIT) toggle(display, 'follow', () => {});
 
   const forces = $('forces');
   slider(forces, 'center', 0, 1, .01, reheat);
@@ -1773,9 +1928,9 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   if (innerWidth < 760) document.body.classList.add('no-side');
   menu.setAttribute('aria-expanded', String(!document.body.classList.contains('no-side')));
   const centreOfView = () => { const area = seen(); return [area.middle, area.centre]; };
-  for (const [glyph, name, run] of [['+', TEXT.zoomIn, () => zoom(1.4, ...centreOfView(), true)],
-                                    ['−', TEXT.zoomOut, () => zoom(1 / 1.4, ...centreOfView(), true)],
-                                    ['⤢', TEXT.fit, () => fit()]]) {
+  for (const [glyph, name, run] of [['+', TEXT.zoomIn, () => { own = true; zoom(1.4, ...centreOfView(), true); }],
+                                    ['−', TEXT.zoomOut, () => { own = true; zoom(1 / 1.4, ...centreOfView(), true); }],
+                                    ['⤢', TEXT.fit, () => { own = false; fit(); }]]) {
     const button = el('button', {className: 'btn', textContent: glyph, title: name, onclick: run});
     button.setAttribute('aria-label', name);
     $('zoom').append(button);
@@ -1798,13 +1953,17 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   new ResizeObserver(resize).observe(canvas);
   resize();
   fit(true);
-  const framed = Object.assign({}, view);
+  let reframe = true, frames = 0;  // the graph is moving and the camera is not the reader's: keep it framed
   (function frame() {
+    if (news) { dirty = true; if (performance.now() > news) news = 0; }
     if (owed) {
       settle(12);
-      // Once it has settled the camera frames it again, unless it has been moved meanwhile.
-      if (!owed && !aim && view.x === framed.x && view.y === framed.y && view.k === framed.k) fit();
-    } else if (alpha > .02) { tick(); dirty = true; }
+      if (!owed && !own) fit();
+    } else if (alpha > .02) {
+      tick();
+      dirty = true;
+      if (reframe && !own && ++frames % 24 === 0) fit();  // a graph that is growing is followed as it spreads
+    } else if (reframe) { reframe = false; if (!own) fit(); }  // settled: the camera frames what there is now
     if (aim) {  // ease the camera towards where it was asked to go
       view.x += (aim.x - view.x) * .2; view.y += (aim.y - view.y) * .2; view.k += (aim.k - view.k) * .2;
       if (Math.abs(aim.x - view.x) < .5 && Math.abs(aim.y - view.y) < .5 && Math.abs(aim.k - view.k) < .002) {

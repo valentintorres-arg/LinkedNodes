@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import subprocess
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from itertools import combinations
 from pathlib import Path
 
@@ -30,6 +31,13 @@ def _git(root: Path, *args: str) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.decode("utf-8", "replace") if result.returncode == 0 else None
+
+
+def _gits(root: Path, *asks: tuple[str, ...]) -> list[str | None]:
+    """Several questions for git, asked side by side: it is slow to start, on Windows above
+    all, and a build that asks them one after another spends most of its time waiting."""
+    with ThreadPoolExecutor(len(asks)) as pool:
+        return list(pool.map(lambda args: _git(root, *args), asks))
 
 
 def is_repo(root: Path) -> bool:
@@ -144,14 +152,18 @@ def diff(root: Path, base: str = "HEAD", path: str | None = None
     only = ["--", path] if path else []
     changes: dict[str, str] = {}
     hunks: dict[str, list[tuple[int, int]]] = {}
-    if _git(root, "rev-parse", "--verify", "--quiet", base + "^{commit}") is not None:
-        names = _git(root, "diff", "--name-status", "--relative", "--no-renames", base, *only) or ""
-        for line in names.splitlines():
+    known, names, patch, others = _gits(
+        root, ("rev-parse", "--verify", "--quiet", base + "^{commit}"),
+        ("diff", "--name-status", "--relative", "--no-renames", base, *only),
+        ("diff", "-U0", "--relative", "--no-renames", "--no-color", "--no-ext-diff", base, *only),
+        ("ls-files", "--others", "--exclude-standard", *only))
+    if known is not None:
+        for line in (names or "").splitlines():
             status, _, name = line.partition("\t")
             if name:
                 changes[name] = STATUS.get(status[:1], "modified")
-        patch = _git(root, "diff", "-U0", "--relative", "--no-renames", "--no-color", "--no-ext-diff", base, *only) or ""
         current = None
+        patch = patch or ""
         for line in patch.splitlines():
             if line.startswith("+++ "):
                 current = line[6:].rstrip("\t") if line.startswith("+++ b/") else None
@@ -163,7 +175,7 @@ def diff(root: Path, base: str = "HEAD", path: str | None = None
                 hunks.setdefault(current, []).append((start, start + count - 1) if count else (start, start + 1))
     elif base != "HEAD":  # a repository without commits has no HEAD yet, which is not an error
         raise ValueError(f"git does not know '{base}'")
-    for name in (_git(root, "ls-files", "--others", "--exclude-standard", *only) or "").splitlines():
+    for name in (others or "").splitlines():
         changes[name] = "untracked"
     return changes, hunks
 
@@ -207,13 +219,19 @@ def touched(nodes: list[dict], changes: dict[str, str], hunks: dict) -> dict[str
 
 def snapshot(root: Path, nodes: list[dict], base: str = "HEAD") -> dict | None:
     """The state of the working tree against a commit, or None outside a repository."""
-    if not is_repo(root):
+    with ThreadPoolExecutor(1) as pool:
+        facts = pool.submit(_gits, root, ("rev-parse", "--is-inside-work-tree"), ("rev-parse", "--abbrev-ref", "HEAD"),
+                            ("rev-parse", "--short", "HEAD"))
+        try:
+            changes, hunks = diff(root, base)
+        finally:
+            inside, branch, head = facts.result()
+    if (inside or "").strip() != "true":
         return None
-    changes, hunks = diff(root, base)
     changes = {path: status for path, status in changes.items() if not path.startswith(OUT_DIR + "/")}
     return {
-        "branch": (_git(root, "rev-parse", "--abbrev-ref", "HEAD") or "").strip(),
-        "head": (_git(root, "rev-parse", "--short", "HEAD") or "").strip(),
+        "branch": (branch or "").strip(),
+        "head": (head or "").strip(),
         "base": base,
         "changed": changes,
         "nodes": touched(nodes, changes, hunks),

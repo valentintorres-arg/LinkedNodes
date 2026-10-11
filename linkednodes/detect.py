@@ -66,6 +66,33 @@ def _ignored(rel: str, patterns: list[str]) -> bool:
                for p in patterns)
 
 
+def pulse(root: Path) -> str:
+    """A short string that changes when a file in the folder is added, removed or written.
+
+    It reads no file, only names, sizes and times, and leaves out the folders a scan
+    leaves out, so it can be asked several times a second: it is how an open window
+    notices at once that the folder under it has changed.
+    """
+    digest, waiting = hashlib.sha1(), [str(root)]
+    while waiting:
+        folder = waiting.pop()
+        try:
+            entries = sorted(os.scandir(folder), key=lambda entry: entry.name)
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name not in SKIP_DIRS and not entry.name.startswith(".") and not entry.name.endswith(".egg-info"):
+                        waiting.append(entry.path)
+                else:
+                    found = entry.stat(follow_symlinks=False)
+                    digest.update(f"{entry.path}:{found.st_mtime_ns}:{found.st_size};".encode("utf-8", "replace"))
+            except OSError:
+                continue
+    return digest.hexdigest()
+
+
 def scan(root: Path, each=None) -> tuple[list[dict], list[saved.Item]]:
     """Return every readable file as a record, plus the saved items found in exports.
 

@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import annotations, gitinfo, gitops, graph, loading, pipeline, titlebar
+from . import annotations, detect, gitinfo, gitops, graph, loading, pipeline, titlebar
 from .detect import OUT_DIR
 from .util import read_json
 
@@ -46,6 +46,34 @@ class App:
         self.lock = threading.Lock()  # one write or rebuild at a time
         self.stopped = threading.Event()
         self.reading: loading.Progress | None = None  # the rebuild under way, or the last one, for the page that follows it
+        self.known = self.built()  # the graph on disk as this server last wrote or saw it
+        self.elsewhere = 0  # how often another program has built the graph since this one started
+        self.pulse = ""  # the files as the watch last found them
+        self.stamp: str | None = None  # the working tree as git last described it
+        self.asked, self.due = -10.0, True  # when git was last asked, and whether it should be asked again
+
+    def built(self) -> int:
+        """When the graph on disk was written, or 0 when there is none."""
+        try:
+            return (self.out / "graph.json").stat().st_mtime_ns
+        except OSError:
+            return 0
+
+    def built_elsewhere(self) -> int:
+        """How often the graph has been built by another program while this one was up.
+
+        A hook after a commit does that, and so does an assistant working in the folder. The
+        page that is open is told, so that it can take the new graph. What this server writes
+        itself is not counted: it is looked at only while no write of its own is under way.
+        """
+        if self.lock.acquire(blocking=False):
+            try:
+                now = self.built()
+                if now != self.known:
+                    self.known, self.elsewhere = now, self.elsewhere + 1
+            finally:
+                self.lock.release()
+        return self.elsewhere
 
     def reread(self) -> None:
         """Scan and build again on the side, keeping what is found where a page can ask for it."""
@@ -56,27 +84,42 @@ class App:
         def work() -> None:
             try:
                 with self.lock:
-                    pipeline.scan(self.root, progress)
-                    pipeline.build(self.root, progress)
+                    try:
+                        pipeline.scan(self.root, progress)
+                        pipeline.build(self.root, progress)
+                    finally:
+                        self.known = self.built()
             except Exception as error:  # the page that is watching says so; the old graph is still there
                 progress.fail(f"{type(error).__name__}: {error}")
 
         threading.Thread(target=work, daemon=True).start()
 
-    def watch(self, seen: str) -> str | None:
-        """Wait until the working tree no longer looks like `seen`, and say what it looks like now.
+    def watch(self, seen: str, built: str | None = None, beat: str | None = None) -> tuple[str | None, int, str]:
+        """Wait until something the page follows has changed, and say how it all stands now.
 
-        The page asks again as soon as it has an answer, so this is how it follows the
-        folder as it changes. Outside a repository there is nothing to follow.
+        Three things are followed. The working tree as git sees it, which the Git section
+        shows; that is asked every couple of seconds, git being slow to start. How often
+        another program has built the graph. And the files themselves, by their names, sizes
+        and times: that costs next to nothing, so it is looked at several times a second,
+        and is what lets a new file show up in the graph almost as it is saved.
         """
         deadline = time.monotonic() + PATIENCE
         while True:
             started = time.monotonic()
-            stamp = gitops.fingerprint(self.root)
+            pulse = detect.pulse(self.root)
             took = time.monotonic() - started
-            # A repository where status is slow is asked less often, to leave it in peace.
-            if stamp != seen or started > deadline or self.stopped.wait(max(1.0, 4 * took)):
-                return stamp
+            if pulse != self.pulse:
+                self.pulse, self.due = pulse, True
+            if beat is not None and pulse != beat:
+                # The files moved: the page hears it now, and how git sees them on its next asking.
+                return self.stamp, self.built_elsewhere(), pulse
+            if self.due or started - self.asked > 2:  # the files moved, or it has been a while
+                self.due, self.asked = False, started
+                self.stamp = gitops.fingerprint(self.root)
+            elsewhere = self.built_elsewhere()
+            if ((self.stamp or "") != seen or (built is not None and str(elsewhere) != built)
+                    or started > deadline or self.stopped.wait(max(.15, 8 * took))):
+                return self.stamp, elsewhere, pulse
 
     def node(self, node_id) -> dict:
         data = read_json(self.out / "graph.json") or {"nodes": []}
@@ -129,6 +172,19 @@ class App:
         shutil.copymode(path, temporary)
         os.replace(temporary, path)
         return {"hash": hashlib.sha1(data).hexdigest(), "git": gitinfo.file_diff(self.root, node["source_file"])}
+
+
+class _Own:
+    """Around a write of this server's own: what it leaves on disk is not another program's build."""
+
+    def __init__(self, app: App):
+        self.app = app
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *failure):
+        self.app.known = self.app.built()
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -204,7 +260,10 @@ class _Handler(BaseHTTPRequestHandler):
                 raise Refused(400, str(error))
             return {"git": state, "repo": gitops.state(app.root)}
         if route == ("GET", "/api/watch"):
-            return {"stamp": app.watch(asked.get("seen", ""))}
+            stamp, elsewhere, pulse = app.watch(asked.get("seen", ""), asked.get("built"), asked.get("beat"))
+            return {"stamp": stamp, "built": elsewhere, "beat": pulse}
+        if route == ("GET", "/api/graph"):  # for a page that is open when the graph has been built again
+            return {"graph": pipeline.shown(app.root, {"token": app.token})}
         if route == ("GET", "/api/progress"):  # with no rebuild to speak of, the page is sent back to the graph
             return {"state": app.reading.account() if app.reading else {"step": "done", "name": app.root.name}}
         if route == ("GET", "/api/diff"):
@@ -217,11 +276,14 @@ class _Handler(BaseHTTPRequestHandler):
         if route == ("POST", "/api/rebuild") and body.get("watch"):
             app.reread()
             return {"watching": True}
-        with app.lock:
+        with app.lock, _Own(app):
             if route == ("POST", "/api/rebuild"):
                 scanned = pipeline.scan(app.root)
                 built = pipeline.build(app.root)
-                return {"nodes": built["counts"]["nodes"], "pending": sum(scanned["chunks"].values())}
+                reply = {"nodes": built["counts"]["nodes"], "pending": sum(scanned["chunks"].values())}
+                if body.get("graph"):  # the page takes the new graph in as it is, without loading itself again
+                    reply["graph"] = pipeline.shown(app.root, {"token": app.token})
+                return reply
             if route == ("POST", "/api/repo"):
                 return {"output": gitops.act(app.root, body), "repo": gitops.state(app.root)}
             node = app.node(body.get("id"))
