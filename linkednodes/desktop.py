@@ -11,12 +11,15 @@ computer yet.
 from __future__ import annotations
 
 import html
+import json
 import locale
 import os
 import re
 import threading
+import time
 import traceback
 import webbrowser
+from importlib import resources
 from pathlib import Path
 
 from . import github, gitops, pipeline, titlebar
@@ -117,6 +120,8 @@ class Desktop:
         self.asking = bool(github.CLIENT_ID and github.load(data_folder()))  # GitHub has yet to say who this is
         self.trouble = ""
         self.given_up = threading.Event()
+        self.reading = False  # a folder is being read, so nothing else is opened or rebuilt meanwhile
+        self.linger = .9  # seconds the totals stay on show once a folder has been read
 
     def say(self, english: str, castellano: str) -> str:
         return castellano if self.lang == "es" else english
@@ -126,6 +131,88 @@ class Desktop:
         # The web view reports the system's language, so the viewer is told which one to use,
         # and that it is in the window, where the title bar takes some room at the top.
         return f"http://127.0.0.1:{self.httpd.server_address[1]}/?lang={self.lang}&app=1"
+
+    def loading(self, state: dict, again: bool = False) -> str:
+        """The page on show while a folder is read: what is being found in it, as it is found."""
+        say = self.say
+        text = {
+            "locale": self.lang,
+            "doing": say("Building the graph again", "Reconstruyendo el grafo") if again
+                     else say("Reading the folder", "Leyendo la carpeta"),
+            "ready": say("Ready", "Listo"),
+            "files": say("Files", "Archivos"), "nodes": say("Nodes", "Nodos"),
+            "edges": say("Relations", "Relaciones"), "communities": say("Groups", "Grupos"),
+            "steps": {"files": say("Finding the files", "Buscar los archivos"),
+                      "code": say("Reading the code", "Leer el código"),
+                      "notes": say("Notes, images and saved links", "Notas, imágenes y enlaces guardados"),
+                      "history": say("Git history", "Historia de git"),
+                      "groups": say("Grouping what belongs together", "Agrupar lo que va junto"),
+                      "writing": say("Drawing the graph", "Dibujar el grafo")},
+            "of": say("of", "de"), "since": say("since", "desde"),
+            "noHistory": say("not a repository", "no es un repositorio"),
+            "commits": ["commit", "commits"], "authors": say(["author", "authors"], ["autor", "autores"]),
+            "fileWords": say(["file", "files"], ["archivo", "archivos"]),
+            "noteWords": say(["note", "notes"], ["nota", "notas"]),
+            "imageWords": say(["image", "images"], ["imagen", "imágenes"]),
+            "savedWords": say(["saved link", "saved links"], ["enlace", "enlaces"]),
+            "groupWords": say(["group", "groups"], ["grupo", "grupos"]),
+        }
+
+        def blob(data) -> str:  # escaping "<" keeps a folder's name from closing the script tag it is written into
+            return json.dumps(data, ensure_ascii=False).replace("<", "\\u003c")
+
+        package = resources.files("linkednodes")
+        page = package.joinpath("loading.html").read_text(encoding="utf-8")
+        for mark, value in (("__LANG__", self.lang), ("__BAR__", str(titlebar.HEIGHT)), ("__TEXT__", blob(text)),
+                            ("__STATE__", blob(state)),
+                            ("__ANIME__", package.joinpath("vendor").joinpath("anime.umd.min.js").read_text(encoding="utf-8"))):
+            page = page.replace(mark, value)
+        return page
+
+    def read(self, root: Path, again: bool = False) -> None:
+        """Scan a folder and build its graph, with the window showing what is found meanwhile."""
+        root = root.resolve()
+        state, lock, over = {"step": "files", "name": root.name, "path": str(root)}, threading.Lock(), threading.Event()
+
+        def progress(step: str, **facts) -> None:
+            with lock:
+                state.update(facts, step=step)
+
+        def repository() -> None:  # which repository this is; asked on the side, git being slow to start
+            name, on = github.repo_name(gitops.origin(root)), gitops.branch(root)
+            with lock:
+                state.update(repo=name, branch=on)
+
+        def tell() -> None:  # the page hears a few times a second, never once for every file
+            sent = ""
+            while True:
+                last = over.is_set()
+                with lock:
+                    now = json.dumps(state)
+                if now != sent:
+                    sent = now
+                    try:
+                        self.window.evaluate_js(f"window.loading && window.loading({now})")
+                    except Exception:  # the page is leaving; the next one has nothing to be told
+                        pass
+                if last:
+                    return
+                over.wait(.12)
+
+        self.reading = True
+        teller = threading.Thread(target=tell, daemon=True)
+        try:
+            self.window.load_html(self.loading(dict(state), again))
+            teller.start()
+            threading.Thread(target=repository, daemon=True).start()
+            pipeline.scan(root, progress)
+            pipeline.build(root, progress)
+        finally:
+            over.set()
+            if teller.is_alive():
+                teller.join(5)
+            self.reading = False
+        time.sleep(self.linger)
 
     def serve(self, root: Path) -> str:
         """Start a server for a folder, building its graph first if it has none."""
@@ -196,10 +283,14 @@ class Desktop:
 
     def show(self, root: Path) -> None:
         """Point the window at a folder; runs off the main thread, so it may take its time."""
+        if self.reading:
+            return
         self.at_home = False
-        self.window.load_html(self.message(self.say(
-            "Reading the folder. The first time takes longer.", "Leyendo la carpeta. La primera vez tarda más.")))
         try:
+            if (root / OUT_DIR / "graph.json").exists():
+                self.window.load_html(self.message(self.say("Opening the graph.", "Abriendo el grafo.")))
+            else:
+                self.read(root)
             address = self.serve(root)
         except Exception as error:  # the window must say what went wrong rather than stay blank
             self.window.load_html(self.message(f"{type(error).__name__}: {error}", back=True))
@@ -252,9 +343,12 @@ class Desktop:
             self.show(folders[index])
 
     def rebuild(self) -> None:
-        if self.root and not self.at_home:
-            pipeline.scan(self.root)
-            pipeline.build(self.root)
+        if self.root and not self.at_home and not self.reading:
+            try:
+                self.read(self.root, again=True)
+            except Exception as error:  # as when a folder is opened: say it, rather than stay on a page that waits
+                self.window.load_html(self.message(f"{type(error).__name__}: {error}", back=True))
+                return
             self.window.load_url(self.address)
 
     def speak(self, lang: str) -> None:
@@ -425,6 +519,25 @@ class _Api:
         self._app.window.destroy()
 
 
+def forgiving(evaluate):
+    """The window's way of running a script in its page, made to let one thing go.
+
+    What a page asks of the program is answered into that same page. When the page has
+    left meanwhile, as it has whenever the answer was to show another one, the answer has
+    nowhere to land and the web view reports an error for it. Nothing went wrong, so such
+    an answer is dropped instead; any other script still fails as loudly as before.
+    """
+    def run(script, *rest, **more):
+        try:
+            return evaluate(script, *rest, **more)
+        except Exception:
+            if "_returnValuesCallbacks" not in script:
+                raise
+            return None
+
+    return run
+
+
 def run(root: Path | None = None) -> None:
     """Open the window on a folder; without one, on the last folder used or the start page."""
     try:
@@ -435,21 +548,36 @@ def run(root: Path | None = None) -> None:
     start = root or next(iter(recent()), None)
     look = dict(width=1440, height=900, min_size=(900, 600), background_color="#0b0c0e", text_select=True,
                 js_api=_Api(app))
-    if start:
+    unread = None  # a folder to read once the window is up, so that reading it can be watched
+    if start and (start / OUT_DIR / "graph.json").exists():
         address = app.serve(start)
         app.window = webview.create_window("LinkedNodes", address, **look)  # the folder's name is in the page
+    elif start:
+        unread = start
+        app.window = webview.create_window("LinkedNodes", html=app.message(""), **look)
     else:
         app.at_home = True
         app.window = webview.create_window("LinkedNodes", html=app.welcome(), **look)
+    app.window.evaluate_js = forgiving(app.window.evaluate_js)
     # The window draws its own title bar, with the menus in it, on every page it loads.
     app.window.events.before_show += app.frame
     app.window.events.loaded += app.dress
     storage = data_folder() / "webview"
     storage.mkdir(parents=True, exist_ok=True)
+    def begin() -> None:
+        if app.asking:
+            threading.Thread(target=app.account, daemon=True).start()
+        if unread:
+            # The page the window opened with must be in first: one sent while it is still on
+            # its way is lost, and the folder would be read behind an empty window.
+            app.window.events.loaded.wait(20)
+            app.show(unread)
+
     try:
         # Not private, and with a folder of its own, so the viewer's settings survive. Once the
-        # window is up, GitHub is asked who the stored token belongs to, if there is one.
-        webview.start(app.account if app.asking else None, private_mode=False, storage_path=str(storage))
+        # window is up, GitHub is asked who the stored token belongs to, if there is one, and a
+        # folder that has no graph yet is read.
+        webview.start(begin if app.asking or unread else None, private_mode=False, storage_path=str(storage))
     finally:
         app.close()
 

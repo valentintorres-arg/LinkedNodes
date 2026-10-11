@@ -120,6 +120,11 @@ def _remote(root: Path) -> str:
     return "origin" if "origin" in remotes else next(iter(remotes), "")
 
 
+def branch(root: Path) -> str:
+    """The branch that is checked out, or '' outside a repository and on a detached head."""
+    return next(iter(_lines(root, "branch", "--show-current")), "")
+
+
 def origin(root: Path) -> str:
     """The address of the remote called origin, or '' when the folder has none."""
     return next(iter(_lines(root, "config", "--get", "remote.origin.url")), "")

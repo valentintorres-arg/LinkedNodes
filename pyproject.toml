@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "linkednodes"
-version = "0.1.0"
+version = "0.2.0"
 description = "Turn a folder of code, notes, saved links and images into a knowledge graph."
 readme = "README.md"
 license = "MIT"
@@ -24,4 +24,4 @@ linkednodes = "linkednodes.cli:main"
 packages = ["linkednodes"]
 
 [tool.setuptools.package-data]
-linkednodes = ["viewer.html", "skill/SKILL.md"]
+linkednodes = ["viewer.html", "loading.html", "vendor/*", "skill/SKILL.md"]

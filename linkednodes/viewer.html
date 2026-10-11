@@ -512,10 +512,11 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   }
   const STIFF = 1.5;  // the most a node's springs may add up to; a little over 2, and the steps stop converging
   const NEAR = [0, 0, 1, 0, -1, 1, 0, 1, 1, 1];  // a cell, then those to its right and below: each pair is met once
-  let dragging = null;
+  const FAR = 1000;  // from this many nodes on, what is far from a node is taken a cell at a time
+  let dragging = null, owed = 0;  // owed: steps of the first layout still to take
   // The repulsion is worked out on plain arrays of numbers: with a thousand nodes it is
   // hundreds of thousands of pairs a step, and reading each from its node is what made it slow.
-  let X = new Float64Array(0), Y = X, FX = X, FY = X, order = new Int32Array(0), first = order;
+  let X = new Float64Array(0), Y = X, FX = X, FY = X, MX = X, MY = X, order = new Int32Array(0), first = order;
   function repel() {
     const count = active.length, reach = 240 + S.distance * 2 + S.repel * 320, reach2 = reach * reach;
     const force = (40 + S.repel * S.repel * 1600) * alpha;
@@ -531,7 +532,10 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     }
     // Nodes only repel within reach, so each is compared with those in its own cell of a
     // grid and in the cells around it. One node dragged far away must not make the grid huge.
-    let size = reach, cols = Math.floor((x1 - x0) / size) + 1, rows = Math.floor((y1 - y0) / size) + 1;
+    // In a large graph the cells are a quarter of the reach across, and the ones further out
+    // each push as a single body where they have their middle: far fewer sums, and as good.
+    const span = count >= FAR ? 4 : 1;
+    let size = reach / span, cols = Math.floor((x1 - x0) / size) + 1, rows = Math.floor((y1 - y0) / size) + 1;
     while (cols * rows > 4096) { size *= 2; cols = Math.floor((x1 - x0) / size) + 1; rows = Math.floor((y1 - y0) / size) + 1; }
     const cells = cols * rows;
     if (first.length < cells + 2) first = new Int32Array(cells + 2); else first.fill(0, 0, cells + 2);
@@ -561,6 +565,29 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
           FX[i] += fx; FY[i] += fy;
         }
       }
+    }
+    if (span === 1) return;
+    if (MX.length < cells) { MX = new Float64Array(cells); MY = new Float64Array(cells); }
+    for (let c = 0; c < cells; c++) {
+      let x = 0, y = 0;
+      for (let p = first[c]; p < first[c + 1]; p++) { x += X[order[p]]; y += Y[order[p]]; }
+      MX[c] = x / (first[c + 1] - first[c]); MY[c] = y / (first[c + 1] - first[c]);
+    }
+    for (let cy = 0; cy < rows; cy++) for (let cx = 0; cx < cols; cx++) {
+      const c = cy * cols + cx, end = first[c + 1];
+      if (first[c] === end) continue;
+      for (let oy = Math.max(0, cy - span); oy <= cy + span && oy < rows; oy++)
+        for (let ox = Math.max(0, cx - span); ox <= cx + span && ox < cols; ox++) {
+          if (Math.abs(ox - cx) < 2 && Math.abs(oy - cy) < 2) continue;  // those were met node by node
+          const other = oy * cols + ox, weight = (first[other + 1] - first[other]) * force;
+          if (!weight) continue;
+          const mx = MX[other], my = MY[other];
+          for (let p = first[c]; p < end; p++) {
+            const i = order[p], dx = mx - X[i], dy = my - Y[i], d2 = dx * dx + dy * dy;
+            if (d2 > reach2) continue;
+            FX[i] -= dx * weight / d2; FY[i] -= dy * weight / d2;
+          }
+        }
     }
   }
   function tick() {
@@ -593,13 +620,12 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   }
   function reheat() {
     alpha = Math.max(alpha, .5);
-    if (still) { for (let i = 0; i < 200; i++) tick(); alpha = 0; }  // no animation was asked for
+    if (still && !owed) { for (let i = 0; i < 200; i++) tick(); alpha = 0; }  // no animation was asked for
     dirty = true;
   }
   // The first layout takes a few hundred steps. They are taken out of sight for as long as
   // that is not felt as a wait; a large graph takes the rest on screen, a few to a frame,
   // so it is seen coming together instead of leaving the page blank.
-  let owed = 0;
   function settle(patience) {
     const until = performance.now() + patience;
     while (owed && (still || performance.now() < until)) { tick(); owed--; }
@@ -1750,9 +1776,9 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   refreshGit();  // with a server behind the page, show the working tree as it is now
   if (EDIT) watch();
   scatter();
+  owed = 300;  // set before the first filter, which would otherwise lay the graph out by itself
   refilter();
   alpha = 1;
-  owed = 300;
   settle(250);
   new ResizeObserver(resize).observe(canvas);
   resize();

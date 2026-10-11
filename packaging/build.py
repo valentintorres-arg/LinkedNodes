@@ -69,9 +69,22 @@ def _places() -> tuple[Path, list[Path]]:
 
 def install() -> None:
     target, shortcuts = _places()
+    # The new copy is put beside the old one, and they change places only once it is whole.
+    # Windows will not move a folder a running program was started from, so with LinkedNodes
+    # open this stops there, and the copy that is installed is left as it was.
+    fresh, old = target.with_name(target.name + ".new"), target.with_name(target.name + ".old")
+    for leftover in (fresh, old):
+        shutil.rmtree(leftover, ignore_errors=True)
+    shutil.copytree(BUILT, fresh)
     if target.exists():
-        shutil.rmtree(target)
-    shutil.copytree(BUILT, target)
+        try:
+            target.rename(old)
+        except OSError:
+            shutil.rmtree(fresh, ignore_errors=True)
+            raise SystemExit(f"error: LinkedNodes is open, so {target} cannot be replaced. Close its window and "
+                             "run this again; the build in dist/ is kept.")
+    fresh.rename(target)
+    shutil.rmtree(old, ignore_errors=True)
     program = target / "LinkedNodes.exe"
     for shortcut in shortcuts:
         script = (f"$s = (New-Object -ComObject WScript.Shell).CreateShortcut('{shortcut}'); "

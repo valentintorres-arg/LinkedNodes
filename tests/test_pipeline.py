@@ -347,6 +347,9 @@ class PipelineTest(unittest.TestCase):
 
         status, reply = call("PUT", "/api/note", {"id": target, "text": "Hecho a mano."})
         self.assertEqual((status, reply["doc"]), (200, "Hecho a mano."))
+        # The note is in the graph on disk at once, without the graph being built again.
+        self.assertEqual(Graph(self.root).nodes[target]["doc"], "Hecho a mano.")
+        self.assertIn("Hecho a mano.", (self.out / "graph.html").read_text(encoding="utf-8"))
         status, reply = call("PUT", "/api/props", {"id": target, "label": "Pedido"})
         self.assertEqual((reply["node"]["label"], reply["node"]["family"]), ("Pedido", "code"))
 
@@ -368,6 +371,9 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(call("GET", "/api/git")[1], {"git": None, "repo": None})
         self.assertEqual(call("GET", "/api/watch")[1], {"stamp": None})
         self.assertEqual(call("POST", "/api/repo", {"do": "stage"})[0], 409)
+        # An emptied note leaves the graph as well.
+        self.assertEqual(call("PUT", "/api/note", {"id": target, "text": "  "})[1], {"doc": ""})
+        self.assertNotIn("doc", Graph(self.root).nodes[target])
 
     def test_source_keeps_line_endings(self):
         self.answer_all()
@@ -583,6 +589,73 @@ class PipelineTest(unittest.TestCase):
         finally:
             app.close()
             other.cleanup()
+
+    def test_reading_a_folder_is_reported_as_it_goes(self):
+        seen = []
+        pipeline.scan(self.root, lambda step, **facts: seen.append((step, facts)))
+        result = pipeline.build(self.root, lambda step, **facts: seen.append((step, facts)))
+        steps = [step for index, (step, _) in enumerate(seen) if not index or seen[index - 1][0] != step]
+        self.assertEqual(steps, ["files", "code", "notes", "history", "groups", "writing", "done"])
+        found = {}
+        for _, facts in seen:
+            found.update(facts)
+        counts = result["counts"]
+        self.assertEqual((found["nodes"], found["edges"], found["communities"]),
+                         (counts["nodes"], counts["edges"], counts["communities"]))
+        self.assertEqual((found["parsed"], found["total"], found["languages"]["python"]), (4, 4, 2))
+        self.assertNotIn("commits", found)  # the folder is not a repository
+
+    def test_desktop_window_shows_a_folder_being_read(self):
+        class Window:  # stands in for the real one: it keeps what it is shown and what the page is told
+            def __init__(self):
+                self.pages, self.told, self.address = [], [], ""
+
+            def load_html(self, page):
+                self.pages.append(page)
+
+            def load_url(self, address):
+                self.address = address
+
+            def evaluate_js(self, script):
+                self.told.append(json.loads(script.split("window.loading(", 1)[1][:-1]))
+
+        home = tempfile.TemporaryDirectory()
+        os.environ["LINKEDNODES_HOME"] = home.name
+        self.addCleanup(lambda: (os.environ.pop("LINKEDNODES_HOME", None), home.cleanup()))
+        app = desktop.Desktop()
+        app.lang, app.linger, app.window = "es", 0, Window()
+        self.addCleanup(app.close)
+        # A folder's name that would end the script it is written into is escaped.
+        page = app.loading({"step": "files", "name": '</script><p id="x">'})
+        self.assertNotIn('</script><p id="x">', page)
+        self.assertNotIn("__ANIME__", page)
+        self.assertIn("Anime.js", page)  # the animation library travels inside the page: there is no network to count on
+
+        app.show(self.root)  # no graph yet: the folder is read with the window following along
+        self.assertIn("Leyendo la carpeta", app.window.pages[0])
+        self.assertTrue(app.window.address.endswith("/?lang=es&app=1"))
+        last = app.window.told[-1]
+        counts = json.loads((self.out / "graph.json").read_text(encoding="utf-8"))["analysis"]["counts"]
+        self.assertEqual((last["step"], last["name"], last["nodes"], last["edges"]),
+                         ("done", self.root.name, counts["nodes"], counts["edges"]))
+        self.assertFalse(app.reading)
+
+        # An answer for a page that has left is dropped; a script of ours that fails still says so.
+        def gone(script):
+            raise ValueError("no such function in the page")
+
+        answer = 'window.pywebview._returnValuesCallbacks["zoomed"]["1"]({value: "false"})'
+        self.assertIsNone(desktop.forgiving(gone)(answer))
+        self.assertRaises(ValueError, desktop.forgiving(gone), "window.loading({})")
+        self.assertEqual(desktop.forgiving(lambda script: 7)(answer), 7)
+
+        app.show(self.root)  # with its graph on disk there is nothing to read, so no such page
+        self.assertIn("Abriendo el grafo", app.window.pages[-1])
+        told = len(app.window.told)
+        app.rebuild()  # asked for from the menu, it is read again, and shown as that
+        self.assertIn("Reconstruyendo el grafo", app.window.pages[-1])
+        self.assertEqual(app.window.told[-1]["step"], "done")
+        self.assertGreater(len(app.window.told), told)
 
     def test_github_sign_in_and_repositories(self):
         if not shutil.which("git"):
@@ -824,6 +897,68 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(names["./api"], {"api": None})
         self.assertIn("./legacy", names)
         self.assertIn(("Page", "load", "api"), [(c.caller, c.name, c.base) for c in info.calls])
+
+
+def browser() -> str | None:
+    """A Chromium on this machine, which can run the viewer without showing a window."""
+    for name in ("msedge", "chrome", "google-chrome", "chromium", "chromium-browser"):
+        if shutil.which(name):
+            return shutil.which(name)
+    places = [Path(os.environ[key]) for key in ("PROGRAMFILES(X86)", "PROGRAMFILES", "LOCALAPPDATA") if os.environ.get(key)]
+    found = [place / tail for place in places
+             for tail in ("Microsoft/Edge/Application/msedge.exe", "Google/Chrome/Application/chrome.exe")]
+    found.append(Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
+    return next((str(path) for path in found if path.is_file()), None)
+
+
+class ViewerTest(unittest.TestCase):
+    # Once the page has had time to lay the graph out, it counts what its canvas shows.
+    COUNT = """<script>
+    setTimeout(() => {
+      const canvas = document.getElementById('canvas');
+      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      let painted = 0;
+      for (let i = 3; i < pixels.length; i += 4) if (pixels[i]) painted++;
+      document.documentElement.dataset.painted = painted;
+    }, 1500);
+    </script>"""
+
+    def painted(self, data: dict) -> int:
+        """How much of the canvas the viewer has drawn on for a graph, in pixels."""
+        program = browser()
+        if not program:
+            self.skipTest("no Chromium browser is installed")
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            page = Path(folder) / "graph.html"
+            page.write_text(pipeline._viewer("test", data) + self.COUNT, encoding="utf-8")
+            shown = subprocess.run(
+                [program, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+                 f"--user-data-dir={Path(folder) / 'profile'}", "--window-size=1200,800",
+                 "--virtual-time-budget=5000", "--dump-dom", page.as_uri()],
+                capture_output=True, timeout=180).stdout.decode("utf-8", "replace")
+        self.assertIn('data-painted="', shown, "the page did not run to the end")
+        return int(shown.split('data-painted="', 1)[1].split('"', 1)[0])
+
+    def test_a_node_with_hundreds_of_links_is_still_drawn(self):
+        # Its springs once threw the layout so far apart that nothing was left on the canvas.
+        nodes = [{"id": "hub", "label": "hub", "kind": "file", "source_file": "hub.py", "community": 0, "degree": 200}]
+        edges = []
+        for index in range(200):
+            nodes.append({"id": f"leaf{index}", "label": f"leaf {index}", "kind": "function", "source_file": "hub.py",
+                          "community": index % 3, "degree": 1})
+            edges.append({"source": "hub", "target": f"leaf{index}", "relation": "contains", "confidence": "EXTRACTED",
+                          "score": 1.0, "source_file": "hub.py"})
+        communities = [{"id": index, "label": f"group {index}", "size": 67} for index in range(3)]
+        self.assertGreater(self.painted({"nodes": nodes, "edges": edges, "communities": communities}), 5000)
+
+    def test_a_large_graph_is_drawn(self):
+        # Past a thousand nodes the layout takes the far ones a cell at a time; it must still end on screen.
+        nodes = [{"id": f"n{index}", "label": f"node {index}", "kind": "function", "source_file": f"f{index % 40}.py",
+                  "community": index % 12, "degree": 2} for index in range(1600)]
+        edges = [{"source": f"n{index}", "target": f"n{(index * 7 + 12) % 1600}", "relation": "calls",
+                  "confidence": "INFERRED", "score": .6, "source_file": ""} for index in range(1600)]
+        communities = [{"id": index, "label": f"group {index}", "size": 133} for index in range(12)]
+        self.assertGreater(self.painted({"nodes": nodes, "edges": edges, "communities": communities}), 5000)
 
 
 if __name__ == "__main__":

@@ -66,8 +66,11 @@ def _ignored(rel: str, patterns: list[str]) -> bool:
                for p in patterns)
 
 
-def scan(root: Path) -> tuple[list[dict], list[saved.Item]]:
-    """Return every readable file as a record, plus the saved items found in exports."""
+def scan(root: Path, each=None) -> tuple[list[dict], list[saved.Item]]:
+    """Return every readable file as a record, plus the saved items found in exports.
+
+    each, when given, is told how many files have been taken so far, after every one.
+    """
     patterns = _ignore_patterns(root)
     in_git = _git_files(root)
     files: list[dict] = []
@@ -102,4 +105,6 @@ def scan(root: Path) -> tuple[list[dict], list[saved.Item]]:
                 continue
             files.append({"path": rel, "kind": kind, "lang": lang, "hash": file_hash(path),
                           "size": size})
+            if each:
+                each(len(files))
     return files, saved.dedupe(items)

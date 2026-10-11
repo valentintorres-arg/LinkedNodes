@@ -81,6 +81,13 @@ it has none, and rebuilds the current one; the Language menu switches between
 Spanish and English. On Windows, `linkednodes-out/open-graph.ps1` opens this window
 when pywebview is installed and falls back to the browser when it is not.
 
+While a folder is read for the first time, or built again from the File menu, the
+window shows what is being found as it is found: the files, the nodes and relations
+counted so far, the repository, its branch and its commits, the languages, and each
+step as it starts and ends, beside a small graph that grows a cluster a step. The
+animation is [Anime.js](https://animejs.com), which travels inside the page, so it
+needs no network. With the system's "reduce motion" setting on, the page only counts.
+
 The window is light on disk, not on memory: the web view is the same engine as the
 Edge browser and uses about as much as one of its tabs.
 
@@ -121,6 +128,8 @@ This builds `dist/LinkedNodes/LinkedNodes.exe` with PyInstaller, a folder of abo
 `%LOCALAPPDATA%\Programs\LinkedNodes` and adds Desktop and Start Menu shortcuts;
 `--uninstall` removes them. Started on its own, the program opens the last folder
 used, or a start page to pick one. Opening a folder that has no graph builds one.
+Installing over a copy that is running stops with a message and leaves that copy
+whole: close the window and run it again.
 
 What the program cannot do by itself is the reading: saying what notes, images and
 saved links are about is still Claude's part, through the skill, and the skill
@@ -218,6 +227,8 @@ It opens the same viewer with three more tabs on every node:
 - **Note**: documentation for the node, written in Markdown. Each note is a file in
   `linkednodes-out/notes/`, so it can be committed with the project. Nodes with a
   note are ringed in the graph, and Claude reads the notes when it queries the graph.
+  Saving one updates that note in the graph and nothing else, so it is quick however
+  large the graph is.
 - **Properties**: correct the node's name, kind or description. Corrections are kept
   in `linkednodes-out/nodes.json` and applied on every build.
 - **Code**: the file the node comes from, opened at the node's line, editable and
@@ -272,7 +283,10 @@ downloaded.
   too; graph it from a folder that is not a repository.
 - A JSON or CSV file with three or more URL records is treated as an export. List
   files that are not in `.linkednodesignore` (one glob pattern per line).
-- The browser view shows the 4,000 most connected nodes of larger graphs.
+- The browser view shows the 4,000 most connected nodes of larger graphs. From a
+  thousand nodes on, its layout takes the nodes far from each one a group at a time
+  rather than one by one, which is what keeps it quick; a graph that size appears at
+  once and goes on settling on screen for a few seconds.
 - Two different spellings of one topic become two nodes. The skill gives Claude
   the existing vocabulary to prevent this, but it can still happen.
 
@@ -282,7 +296,13 @@ downloaded.
 python -m unittest discover -s tests
 ```
 
+Two of the tests draw a graph in the viewer and count what reaches the canvas. They
+run in Edge or Chrome without showing a window, and are skipped when neither is
+installed. `.github/workflows/tests.yml` runs everything on Windows for each push.
+
 ## License
 
 MIT. See [LICENSE](LICENSE). The only runtime dependency, NetworkX, is installed
 separately and is under the BSD 3-Clause license; nothing from it is copied here.
+Anime.js, which animates the page shown while a folder is read, is copied into
+`linkednodes/vendor/` with its own MIT license beside it.

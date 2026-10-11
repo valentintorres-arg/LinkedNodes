@@ -196,8 +196,7 @@ class _Handler(BaseHTTPRequestHandler):
             node = app.node(body.get("id"))
             if route == ("PUT", "/api/note"):
                 annotations.write_note(app.out, node["id"], str(body.get("text") or ""))
-                pipeline.build(app.root)
-                return {"doc": app.node(node["id"]).get("doc", "")}
+                return {"doc": pipeline.renote(app.root, node["id"])}
             if route == ("PUT", "/api/props"):
                 annotations.write_props(app.out, node["id"], body)
                 pipeline.build(app.root)

@@ -546,8 +546,10 @@ class _Resolver:
         return list(self.nodes.values()), list(self.edges.values())
 
 
-def extract(root: Path, files: list[dict]) -> tuple[list[dict], list[dict]]:
-    infos = []
+def extract(root: Path, files: list[dict], each=None) -> tuple[list[dict], list[dict]]:
+    """Nodes and edges of the code. each, when given, is told after every file how many
+    have been read and how many definitions they held."""
+    infos, found = [], 0
     for record in files:
         if record["kind"] != "code":
             continue
@@ -557,4 +559,7 @@ def extract(root: Path, files: list[dict]) -> tuple[list[dict], list[dict]]:
             infos.append(_parse_python(rel, text) if lang == "python" else _parse_generic(rel, lang, text))
         except (OSError, SyntaxError, ValueError, RecursionError):
             infos.append(Info(rel, lang))  # unreadable code still gets its file node
+        found += 1 + len(infos[-1].defs)
+        if each:
+            each(len(infos), found)
     return _Resolver(infos).resolve()

@@ -57,10 +57,22 @@ Leave $LASTEXITCODE
 """
 
 
-def scan(root: Path) -> dict:
-    """Detect files, extract everything structural and queue the semantic work."""
+def _unwatched(step: str, **facts) -> None:
+    """Where progress goes when nobody asked to follow it."""
+
+
+def scan(root: Path, progress=_unwatched) -> dict:
+    """Detect files, extract everything structural and queue the semantic work.
+
+    progress is told which step is under way and what it has found so far: 'files',
+    then 'code', then 'notes'. The desktop window shows it while a folder is read.
+    """
     out = root / detect.OUT_DIR
-    files, items = detect.scan(root)
+    progress("files")
+    files, items = detect.scan(root, lambda count: progress("files", files=count))
+    kinds = dict(Counter(f["kind"] for f in files))
+    languages = dict(Counter(f["lang"] for f in files if f["lang"]).most_common())
+    progress("files", files=len(files), kinds=kinds, languages=languages, saved=len(items))
     # Keep the generated output out of the project's own repository, but not the notes.
     ignore = out / ".gitignore"
     if not ignore.exists() or ignore.read_text(encoding="utf-8") == "*\n":
@@ -68,9 +80,14 @@ def scan(root: Path) -> dict:
         ignore.write_text(annotations.GITIGNORE, encoding="utf-8")
     problems = semantic.ingest(out)  # keep results from an interrupted run
 
-    code_nodes, code_edges = code.extract(root, files)
+    progress("code", parsed=0, total=kinds.get("code", 0))
+    code_nodes, code_edges = code.extract(root, files, lambda read, found: progress("code", parsed=read, nodes=found))
+    progress("code", parsed=kinds.get("code", 0), nodes=len(code_nodes), edges=len(code_edges))
+    progress("notes")
     saved_nodes, saved_edges = saved.to_graph(items)
     doc_nodes, doc_edges = docs.extract(root, files, code_nodes + saved_nodes)
+    progress("notes", nodes=len(code_nodes) + len(saved_nodes) + len(doc_nodes),
+             edges=len(code_edges) + len(saved_edges) + len(doc_edges))
     write_json(out / ".work" / "manifest.json",
                {"files": files, "items": [item.to_dict() for item in items]})
     write_json(out / ".work" / "structural.json",
@@ -78,8 +95,8 @@ def scan(root: Path) -> dict:
                 "edges": code_edges + saved_edges + doc_edges})
     todo = semantic.plan(out, files, items)
     return {
-        "files": dict(Counter(f["kind"] for f in files)),
-        "languages": dict(Counter(f["lang"] for f in files if f["lang"]).most_common()),
+        "files": kinds,
+        "languages": languages,
         "saved_items": len(items),
         "nodes": len(code_nodes) + len(saved_nodes) + len(doc_nodes),
         "edges": len(code_edges) + len(saved_edges) + len(doc_edges),
@@ -115,12 +132,36 @@ def _viewer(title: str, data: dict, edit: dict | None = None) -> str:
     return template.replace("__TITLE__", title.replace("<", "")).replace("__DATA__", blob)
 
 
-def build(root: Path) -> dict:
-    """Assemble the graph from the structural pass and every cached semantic result."""
+def renote(root: Path, node_id: str) -> str:
+    """Bring one node's note up to date in the graph on disk, and return the note.
+
+    A note changes nothing else about the graph, so nothing else is worked out again:
+    saving one is a matter of a moment, however large the graph.
+    """
+    out = root / detect.OUT_DIR
+    data = read_json(out / "graph.json")
+    if data is None:
+        raise FileNotFoundError(f"no graph in {out}; run 'linkednodes build' first")
+    text = annotations.read_notes(out).get(node_id, "")
+    for node in data["nodes"]:
+        if node["id"] == node_id:
+            node.pop("doc", None)
+            if text:
+                node["doc"] = text
+    write_json(out / "graph.json", data)
+    (out / "graph.html").write_text(_viewer(root.name, data), encoding="utf-8")
+    return text
+
+
+def build(root: Path, progress=_unwatched) -> dict:
+    """Assemble the graph from the structural pass and every cached semantic result.
+
+    progress follows on from scan's: 'history', 'groups', 'writing', and 'done' at the end.
+    """
     out = root / detect.OUT_DIR
     work = out / ".work"
     if not (work / "manifest.json").exists():
-        scan(root)
+        scan(root, progress)
     manifest = read_json(work / "manifest.json")
     structural = read_json(work / "structural.json")
     files = manifest["files"]
@@ -131,10 +172,15 @@ def build(root: Path) -> dict:
     file_ids = {f["path"]: docs.node_id(f) for f in files if f["kind"] != "saved"}
     meaning = semantic.load(out, files, items, file_ids, {n["id"] for n in structural["nodes"]})
     # From the history: files that are committed together, and who wrote what.
+    progress("history")
     log = gitinfo.commits(root) if gitinfo.is_repo(root) else []
     people, wrote = gitinfo.authors(log, file_ids)
+    if log:
+        progress("history", commits=len(log), authors=len({entry["email"] or entry["author"] for entry, _ in log}),
+                 since=log[-1][0]["date"])
     nodes, edges = graph.merge([structural["nodes"], meaning["nodes"], people],
                                [structural["edges"], meaning["edges"], gitinfo.cochanges(log, file_ids), wrote])
+    progress("groups", nodes=len(nodes), edges=len(edges))
     for nid, summary in meaning["summaries"].items():
         nodes[nid]["summary"] = summary
     orphan_notes = annotations.apply(nodes, out)
@@ -142,7 +188,9 @@ def build(root: Path) -> dict:
     names = read_json(out / "labels.json", {})
     nxg = graph.to_networkx(nodes, edges)
     communities = graph.cluster(nxg, nodes, names if isinstance(names, dict) else {})
+    progress("groups", communities=len(communities))
     analysis = graph.analyze(nxg, nodes, edges, communities)
+    progress("writing")
     missing = {"files": meaning["missing_files"], "items": meaning["missing_items"]}
 
     data = {"root": root.name, "nodes": list(nodes.values()), "edges": edges,
@@ -158,5 +206,6 @@ def build(root: Path) -> dict:
     (out / "graph.html").write_text(_viewer(root.name, data), encoding="utf-8")
     if os.name == "nt":
         (out / LAUNCHER).write_text(LAUNCHER_SCRIPT, encoding="utf-8-sig")
+    progress("done", nodes=len(nodes), edges=len(edges), communities=len(communities))
     return {"counts": analysis["counts"], "communities": communities, "missing": missing,
             "problems": problems, "orphan_notes": orphan_notes, "out": out}
