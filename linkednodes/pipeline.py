@@ -173,7 +173,7 @@ def build(root: Path, progress=_unwatched) -> dict:
     meaning = semantic.load(out, files, items, file_ids, {n["id"] for n in structural["nodes"]})
     # From the history: files that are committed together, and who wrote what.
     progress("history")
-    log = gitinfo.commits(root) if gitinfo.is_repo(root) else []
+    log = gitinfo.log(root)
     people, wrote = gitinfo.authors(log, file_ids)
     if log:
         progress("history", commits=len(log), authors=len({entry["email"] or entry["author"] for entry, _ in log}),

@@ -13,6 +13,7 @@ import json
 import os
 import secrets
 import shutil
+import sys
 import threading
 import time
 import webbrowser
@@ -20,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import annotations, gitinfo, gitops, graph, pipeline
+from . import annotations, gitinfo, gitops, graph, loading, pipeline, titlebar
 from .detect import OUT_DIR
 from .util import read_json
 
@@ -44,6 +45,23 @@ class App:
         self.hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
         self.lock = threading.Lock()  # one write or rebuild at a time
         self.stopped = threading.Event()
+        self.reading: loading.Progress | None = None  # the rebuild under way, or the last one, for the page that follows it
+
+    def reread(self) -> None:
+        """Scan and build again on the side, keeping what is found where a page can ask for it."""
+        if self.reading and not self.reading.over:
+            return
+        self.reading = progress = loading.Progress(self.root)
+
+        def work() -> None:
+            try:
+                with self.lock:
+                    pipeline.scan(self.root, progress)
+                    pipeline.build(self.root, progress)
+            except Exception as error:  # the page that is watching says so; the old graph is still there
+                progress.fail(f"{type(error).__name__}: {error}")
+
+        threading.Thread(target=work, daemon=True).start()
 
     def watch(self, seen: str) -> str | None:
         """Wait until the working tree no longer looks like `seen`, and say what it looks like now.
@@ -153,6 +171,14 @@ class _Handler(BaseHTTPRequestHandler):
             if method == "GET" and url.path in ("/", "/index.html"):
                 page = pipeline.render(app.root, {"token": app.token})
                 return self._reply(200, page.encode("utf-8"), "text/html; charset=utf-8")
+            if method == "GET" and url.path == "/loading":  # what a rebuild asked for in the viewer is watched on
+                asked = parse_qs(url.query)
+                lang = "es" if asked.get("lang") == ["es"] else "en"
+                framed = "app" in asked  # inside the desktop window, which draws a title bar over the page
+                state = app.reading.account() if app.reading else {"step": "files", "name": app.root.name}
+                page = loading.page(state, lang, True, titlebar.HEIGHT if framed else 0,
+                                    {"token": app.token, "back": f"/?lang={lang}&app=1" if framed else "/"})
+                return self._reply(200, page.encode("utf-8"), "text/html; charset=utf-8")
             if not url.path.startswith("/api/"):
                 raise Refused(404, "not found")
             if not secrets.compare_digest(self.headers.get("X-LinkedNodes-Token", ""), app.token):
@@ -179,6 +205,8 @@ class _Handler(BaseHTTPRequestHandler):
             return {"git": state, "repo": gitops.state(app.root)}
         if route == ("GET", "/api/watch"):
             return {"stamp": app.watch(asked.get("seen", ""))}
+        if route == ("GET", "/api/progress"):  # with no rebuild to speak of, the page is sent back to the graph
+            return {"state": app.reading.account() if app.reading else {"step": "done", "name": app.root.name}}
         if route == ("GET", "/api/diff"):
             return {"patch": gitops.patch(app.root, asked.get("path"), bool(asked.get("staged")), asked.get("commit"))}
         if route == ("GET", "/api/node"):
@@ -186,6 +214,9 @@ class _Handler(BaseHTTPRequestHandler):
             return {"note": annotations.read_notes(app.out).get(node["id"], ""),
                     "source": app.read_source(node)}
         body = self._body()
+        if route == ("POST", "/api/rebuild") and body.get("watch"):
+            app.reread()
+            return {"watching": True}
         with app.lock:
             if route == ("POST", "/api/rebuild"):
                 scanned = pipeline.scan(app.root)
@@ -222,6 +253,12 @@ class _Server(ThreadingHTTPServer):
     # requests to whichever it likes. Refusing makes a taken port an error, as it should be.
     allow_reuse_address = os.name != "nt"
     app = None  # set once the port is bound; a server that failed to bind is closed without one
+
+    def handle_error(self, request, client_address):
+        # A page that closes while it waits for an answer hangs up on it. That happens every
+        # time a window is shut with the working tree being followed, and is no error to print.
+        if not isinstance(sys.exc_info()[1], ConnectionError):
+            super().handle_error(request, client_address)
 
     def server_close(self):
         if self.app:

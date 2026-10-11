@@ -6,13 +6,20 @@ on:
 
 jobs:
   tests:
-    # Windows is where LinkedNodes is developed and where its window runs. The runner has
-    # git, which the history tests use, and Edge, which the viewer tests draw in.
-    runs-on: windows-latest
+    # Windows is where LinkedNodes is developed and where its window runs, so both ends of
+    # the Python range are tried there. Every runner has git, which the history tests use,
+    # and Edge or Chrome, which the viewer tests draw in: here a missing browser fails.
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.12"]
+        include:
+          - {os: windows-latest, python: "3.10"}
+          - {os: windows-latest, python: "3.12"}
+          - {os: ubuntu-latest, python: "3.12"}
+          - {os: macos-latest, python: "3.12"}
+    env:
+      LINKEDNODES_NEED_BROWSER: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

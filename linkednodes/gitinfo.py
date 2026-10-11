@@ -50,6 +50,23 @@ def commits(root: Path, limit: int = 5000) -> list[tuple[dict, list[str]]]:
     return log
 
 
+_read: dict = {}  # the last log read, and the folder and commit it was read at
+
+
+def log(root: Path) -> list[tuple[dict, list[str]]]:
+    """commits(), or nothing outside a repository, read again only once HEAD has moved.
+
+    git is slow to start, so a program that builds the same folder again and again, as
+    the server does after every edit, asks it one short question instead of two long ones.
+    """
+    head = (_git(root, "rev-parse", "--verify", "-q", "HEAD") or "").strip()
+    if not head:  # no commits yet, or no repository at all
+        return commits(root) if is_repo(root) else []
+    if _read.get("at") != (str(root), head):
+        _read.update(at=(str(root), head), log=commits(root))
+    return _read["log"]
+
+
 def history(log: list) -> dict[str, dict]:
     """Per file: number of commits, and the date, author and subject of the latest one."""
     files: dict[str, dict] = {}

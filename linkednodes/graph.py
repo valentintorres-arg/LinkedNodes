@@ -1,6 +1,7 @@
 """Merge extracted nodes and edges into one graph, cluster it and find what stands out."""
 from __future__ import annotations
 
+import hashlib
 from collections import Counter, defaultdict
 
 import networkx as nx
@@ -13,6 +14,28 @@ FAMILY = {"file": "code", "function": "code", "class": "code", "method": "code",
 # and prolific authors look important.
 CONTAINMENT = {"contains", "in_folder", "part_of", "authored"}
 LIBRARY_WEIGHT = 0.15
+
+
+_kept: dict[str, tuple[str, object]] = {}  # the last answer to each slow question, and the graph it was for
+
+
+def _recall(what: str, graph: nx.Graph, work):
+    """work(), unless that was last asked of this very graph: the same nodes, edges and weights.
+
+    Clustering and the search for connectors are most of what a build takes, and a build
+    that only renames a node, or follows a change that touched no structure, asks them of
+    the same graph again. Both are seeded, so the answer would be the same one. It is kept
+    in memory only, for a program that stays up: the window, or the server behind a page.
+    """
+    digest = hashlib.sha1()
+    for node in graph.nodes:
+        digest.update(node.encode("utf-8", "replace") + b"\0")
+    for source, target, weight in graph.edges(data="weight"):
+        digest.update(f"{source}\0{target}\0{weight!r}\0".encode("utf-8", "replace"))
+    key = digest.hexdigest()
+    if _kept.get(what, ("",))[0] != key:
+        _kept[what] = (key, work())
+    return _kept[what][1]
 
 
 def family(kind: str) -> str:
@@ -58,7 +81,7 @@ def to_networkx(nodes: dict, edges: list[dict]) -> nx.Graph:
 def cluster(graph: nx.Graph, nodes: dict, names: dict[str, str]) -> list[dict]:
     """Group nodes into communities. names maps a community's anchor node to a chosen label."""
     if graph.number_of_edges():
-        groups = nx.community.louvain_communities(graph, weight="weight", seed=42)
+        groups = _recall("groups", graph, lambda: nx.community.louvain_communities(graph, weight="weight", seed=42))
     else:
         groups = []
     groups = sorted((g for g in groups if len(g) > 1), key=lambda g: (-len(g), min(g)))
@@ -106,7 +129,8 @@ def analyze(graph: nx.Graph, nodes: dict, edges: list[dict], communities: list[d
     # each costs more and this would otherwise be most of the time a build takes.
     size = len(graph) + graph.number_of_edges()
     sample = min(len(graph), 300, max(50, 500_000 // (size or 1))) or None
-    between = nx.betweenness_centrality(graph, k=sample, seed=42) if graph.number_of_edges() else {}
+    between = (_recall("connectors", graph, lambda: nx.betweenness_centrality(graph, k=sample, seed=42))
+               if graph.number_of_edges() else {})
     hubs = {g["id"] for g in gods[:5]}
     connectors = [brief(nid, score=round(score, 3)) for nid, score in
                   sorted(between.items(), key=lambda kv: (-kv[1], kv[0]))

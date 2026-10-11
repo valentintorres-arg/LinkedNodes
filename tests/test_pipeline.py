@@ -15,7 +15,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from linkednodes import annotations, cli, code, desktop, detect, github, gitinfo, gitops, hooks, pipeline, saved, server
+from linkednodes import annotations, cli, code, desktop, detect, github, gitinfo, gitops, graph, hooks, pipeline, saved, server
 from linkednodes.query import Graph
 
 FILES = {
@@ -327,7 +327,7 @@ class PipelineTest(unittest.TestCase):
             try:
                 with urllib.request.urlopen(request) as reply:
                     raw = reply.read()
-                    return reply.status, raw if path == "/" else json.loads(raw)
+                    return reply.status, raw if path.split("?")[0] in ("/", "/loading") else json.loads(raw)
             except urllib.error.HTTPError as error:
                 return error.code, json.loads(error.read())
 
@@ -371,6 +371,24 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(call("GET", "/api/git")[1], {"git": None, "repo": None})
         self.assertEqual(call("GET", "/api/watch")[1], {"stamp": None})
         self.assertEqual(call("POST", "/api/repo", {"do": "stage"})[0], 409)
+        # A rebuild asked for in the page is done on the side, and watched from a page of its own.
+        self.assertEqual(call("GET", "/api/progress")[1]["state"]["step"], "done")  # none yet: back to the graph
+        self.assertEqual(call("POST", "/api/rebuild", {"watch": True})[1], {"watching": True})
+        for _ in range(200):
+            state = call("GET", "/api/progress")[1]["state"]
+            if state["step"] == "done":
+                break
+            time.sleep(.05)
+        counts = json.loads((self.out / "graph.json").read_text(encoding="utf-8"))["analysis"]["counts"]
+        self.assertEqual((state["step"], state["name"], state["nodes"], state["edges"]),
+                         ("done", self.root.name, counts["nodes"], counts["edges"]))
+        status, page = call("GET", "/loading?lang=es&app=1")
+        self.assertEqual(status, 200)
+        self.assertIn(token.encode(), page)
+        self.assertIn("Reconstruyendo el grafo".encode(), page)
+        self.assertIn(b'"back": "/?lang=es&app=1"', page)
+        self.assertIn(b'"back": "/"', call("GET", "/loading?lang=xx")[1])  # in a browser, and in no language it knows
+        self.assertEqual(call("GET", "/api/progress", token="wrong")[0], 403)
         # An emptied note leaves the graph as well.
         self.assertEqual(call("PUT", "/api/note", {"id": target, "text": "  "})[1], {"doc": ""})
         self.assertNotIn("doc", Graph(self.root).nodes[target])
@@ -758,6 +776,27 @@ class PipelineTest(unittest.TestCase):
         self.answer_all()
         self.assertNotIn("git", json.loads((self.out / "graph.json").read_text(encoding="utf-8")))
 
+    def test_slow_answers_are_kept_for_the_same_graph(self):
+        import networkx as nx
+        asked = []
+        work = lambda: asked.append(1) or len(asked)
+        first = nx.Graph()
+        first.add_edge("a", "b", weight=1.0)
+        same = nx.Graph()
+        same.add_edge("a", "b", weight=1.0)
+        other = nx.Graph()
+        other.add_edge("a", "b", weight=.5)
+        answers = [graph._recall("test", g, work) for g in (first, same, other, other, first)]
+        self.assertEqual(answers, [1, 1, 2, 2, 3])  # worked out again only when the graph is another one
+        # A build that changes no structure gives the same graph as the one before it.
+        self.answer_all()
+        before = json.loads((self.out / "graph.json").read_text(encoding="utf-8"))
+        annotations.write_props(self.out, "code:app/models.py::Order", {"summary": "Un pedido."})
+        pipeline.build(self.root)
+        after = json.loads((self.out / "graph.json").read_text(encoding="utf-8"))
+        self.assertEqual([c["top"] for c in before["communities"]], [c["top"] for c in after["communities"]])
+        self.assertEqual(before["analysis"]["connectors"], after["analysis"]["connectors"])
+
     def test_labels_name_communities(self):
         self.answer_all()
         first = pipeline.build(self.root)["communities"][0]
@@ -927,6 +966,8 @@ class ViewerTest(unittest.TestCase):
         """How much of the canvas the viewer has drawn on for a graph, in pixels."""
         program = browser()
         if not program:
+            # Where the tests are run for everyone, a missing browser must not pass for a passing test.
+            self.assertFalse(os.environ.get("LINKEDNODES_NEED_BROWSER"), "no Chromium browser was found")
             self.skipTest("no Chromium browser is installed")
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
             page = Path(folder) / "graph.html"

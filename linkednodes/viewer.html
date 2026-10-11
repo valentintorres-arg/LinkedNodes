@@ -517,6 +517,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   // The repulsion is worked out on plain arrays of numbers: with a thousand nodes it is
   // hundreds of thousands of pairs a step, and reading each from its node is what made it slow.
   let X = new Float64Array(0), Y = X, FX = X, FY = X, MX = X, MY = X, order = new Int32Array(0), first = order;
+  const WX = new Float64Array(49), WY = new Float64Array(49), WM = new Float64Array(49);  // one cell's far cells
   function repel() {
     const count = active.length, reach = 240 + S.distance * 2 + S.repel * 320, reach2 = reach * reach;
     const force = (40 + S.repel * S.repel * 1600) * alpha;
@@ -532,9 +533,9 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     }
     // Nodes only repel within reach, so each is compared with those in its own cell of a
     // grid and in the cells around it. One node dragged far away must not make the grid huge.
-    // In a large graph the cells are a quarter of the reach across, and the ones further out
+    // In a large graph the cells are a third of the reach across, and the ones further out
     // each push as a single body where they have their middle: far fewer sums, and as good.
-    const span = count >= FAR ? 4 : 1;
+    const span = count >= FAR ? 3 : 1;
     let size = reach / span, cols = Math.floor((x1 - x0) / size) + 1, rows = Math.floor((y1 - y0) / size) + 1;
     while (cols * rows > 4096) { size *= 2; cols = Math.floor((x1 - x0) / size) + 1; rows = Math.floor((y1 - y0) / size) + 1; }
     const cells = cols * rows;
@@ -576,18 +577,25 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     for (let cy = 0; cy < rows; cy++) for (let cx = 0; cx < cols; cx++) {
       const c = cy * cols + cx, end = first[c + 1];
       if (first[c] === end) continue;
+      let far = 0;  // the cells in reach of this one that are not next to it, gathered once for all its nodes
       for (let oy = Math.max(0, cy - span); oy <= cy + span && oy < rows; oy++)
         for (let ox = Math.max(0, cx - span); ox <= cx + span && ox < cols; ox++) {
           if (Math.abs(ox - cx) < 2 && Math.abs(oy - cy) < 2) continue;  // those were met node by node
-          const other = oy * cols + ox, weight = (first[other + 1] - first[other]) * force;
-          if (!weight) continue;
-          const mx = MX[other], my = MY[other];
-          for (let p = first[c]; p < end; p++) {
-            const i = order[p], dx = mx - X[i], dy = my - Y[i], d2 = dx * dx + dy * dy;
-            if (d2 > reach2) continue;
-            FX[i] -= dx * weight / d2; FY[i] -= dy * weight / d2;
-          }
+          const other = oy * cols + ox, held = first[other + 1] - first[other];
+          if (!held) continue;
+          WX[far] = MX[other]; WY[far] = MY[other]; WM[far++] = held * force;
         }
+      for (let p = first[c]; p < end; p++) {
+        const i = order[p], xi = X[i], yi = Y[i];
+        let fx = 0, fy = 0;
+        for (let k = 0; k < far; k++) {
+          const dx = WX[k] - xi, dy = WY[k] - yi, d2 = dx * dx + dy * dy;
+          if (d2 > reach2) continue;
+          const f = WM[k] / d2;
+          fx -= dx * f; fy -= dy * f;
+        }
+        FX[i] += fx; FY[i] += fy;
+      }
     }
   }
   function tick() {
@@ -961,6 +969,13 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
   }
 
   // ---- editing: a note per node, its properties, and the file it comes from
+  // The graph is built again on the side, while a page of its own shows what is being found
+  // and comes back here at the end.
+  async function rebuildGraph() {
+    await api('POST', '/api/rebuild', {watch: true});
+    drafts.clear();
+    location.href = '/loading?lang=' + (SPANISH ? 'es' : 'en') + (CHROME ? '&app=1' : '');
+  }
   async function api(method, path, body) {
     const response = await fetch(path, {
       method, headers: {'Content-Type': 'application/json', 'X-LinkedNodes-Token': EDIT.token},
@@ -1295,7 +1310,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     };
     const rebuild = async () => {
       report(status, TEXT.rebuilding);
-      try { await api('POST', '/api/rebuild', {}); drafts.clear(); location.reload(); }
+      try { await rebuildGraph(); }
       catch (error) { report(status, error.message, true); }
     };
     area.addEventListener('input', () => { draft.code = area.value; repaint(); place(); markTabs(n); });
@@ -1391,7 +1406,7 @@ h2 { font-size: 26px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em
     const before = REPO.head;
     if (!await repo(request) || REPO.head === before) return;
     report(gitStatus, TEXT.rebuilding);
-    try { await api('POST', '/api/rebuild', {}); drafts.clear(); location.reload(); }
+    try { await rebuildGraph(); }
     catch (error) { report(gitStatus, error.message, true); }
   }
   const commitText = el('textarea', {className: 'short'});

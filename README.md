@@ -87,6 +87,8 @@ counted so far, the repository, its branch and its commits, the languages, and e
 step as it starts and ends, beside a small graph that grows a cluster a step. The
 animation is [Anime.js](https://animejs.com), which travels inside the page, so it
 needs no network. With the system's "reduce motion" setting on, the page only counts.
+A graph built again from the viewer itself, after a file is edited or a branch is
+switched, is watched on the same page, in the window and in a browser alike.
 
 The window is light on disk, not on memory: the web view is the same engine as the
 Edge browser and uses about as much as one of its tabs.
@@ -230,7 +232,10 @@ It opens the same viewer with three more tabs on every node:
   Saving one updates that note in the graph and nothing else, so it is quick however
   large the graph is.
 - **Properties**: correct the node's name, kind or description. Corrections are kept
-  in `linkednodes-out/nodes.json` and applied on every build.
+  in `linkednodes-out/nodes.json` and applied on every build. Saving them builds the
+  graph again, since a kind can change what belongs together; the slow parts of a
+  build are remembered for as long as the graph's structure stays the same, so this
+  takes a fraction of a first build.
 - **Code**: the file the node comes from, opened at the node's line, editable and
   saved to disk. The editor follows Visual Studio Code's dark theme: syntax colours
   for the languages the scanner reads, line numbers, breadcrumbs, a status bar with
@@ -298,7 +303,8 @@ python -m unittest discover -s tests
 
 Two of the tests draw a graph in the viewer and count what reaches the canvas. They
 run in Edge or Chrome without showing a window, and are skipped when neither is
-installed. `.github/workflows/tests.yml` runs everything on Windows for each push.
+installed. `.github/workflows/tests.yml` runs everything for each push, on Windows,
+Linux and macOS, and there a missing browser is a failure rather than a skip.
 
 ## License
 

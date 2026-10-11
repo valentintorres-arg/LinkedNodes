@@ -26,6 +26,8 @@ main {
   font: 500 10px/1.2 var(--sans); text-transform: uppercase; letter-spacing: .11em; color: var(--dim);
 }
 h1 { font-size: 34px; font-weight: 400; line-height: 1.1; letter-spacing: -.02em; margin: 8px 0 6px; overflow-wrap: anywhere; }
+.bad { color: #ff9c9c; }
+a { color: var(--ink); text-underline-offset: 2px; }
 #repo { color: var(--muted); margin: 0; min-height: 37px; overflow-wrap: anywhere; }  /* two lines, so nothing moves when it grows */
 #track { height: 1px; background: var(--line); margin: 14px 0 0; }
 #fill { height: 1px; width: 0; background: var(--ink); }
@@ -67,6 +69,7 @@ li.done i { background: var(--ink); border-color: var(--ink); }
     </dl>
     <ol id="steps"></ol>
     <p id="languages"></p>
+    <p><a id="back" hidden></a></p>
   </section>
 </main>
 <script type="application/json" id="text">__TEXT__</script>
@@ -177,6 +180,15 @@ li.done i { background: var(--ink); border-color: var(--ink); }
   const plural = (count, words) => `${number(count)} ${words[count === 1 ? 0 : 1]}`;
   let stage = -1, spoken = false;
   function show(state) {
+    if (state.error) {  // the reading stopped; say why, and offer the way back
+      flow(null);
+      $('doing').textContent = TEXT.failed;
+      $('doing').className = 'label bad';
+      $('name').textContent = state.name || '';
+      $('repo').textContent = state.error;
+      if (TEXT.follow) Object.assign($('back'), {hidden: false, href: TEXT.follow.back, textContent: TEXT.back});
+      return;
+    }
     const at = state.step === 'done' ? STEPS.length : Math.max(0, STEPS.indexOf(state.step));
     $('doing').textContent = at === STEPS.length ? TEXT.ready : TEXT.doing;
     $('name').textContent = state.name || '';
@@ -223,6 +235,20 @@ li.done i { background: var(--ink); border-color: var(--ink); }
   window.loading = show;
   show(JSON.parse(document.getElementById('state').textContent));
   if (A) play('section > *', {opacity: [0, 1], y: [10, 0], duration: 520, delay: A.stagger(45), ease: 'outQuad'});
+  // Served by the local server, the page asks how far the reading has got, and goes back
+  // to the graph once the totals have been on show for a moment.
+  if (TEXT.follow) (async function follow() {
+    for (;;) {
+      try {
+        const reply = await fetch('/api/progress', {headers: {'X-LinkedNodes-Token': TEXT.follow.token}});
+        const state = (await reply.json()).state;
+        show(state);
+        if (state.error) return;
+        if (state.step === 'done') { setTimeout(() => location.replace(TEXT.follow.back), 900); return; }
+      } catch (error) { /* the server is busy; it is asked again */ }
+      await new Promise(resume => setTimeout(resume, 150));
+    }
+  })();
 })();
 </script>
 </body>

@@ -19,10 +19,9 @@ import threading
 import time
 import traceback
 import webbrowser
-from importlib import resources
 from pathlib import Path
 
-from . import github, gitops, pipeline, titlebar
+from . import github, gitops, loading, pipeline, titlebar
 from .detect import OUT_DIR
 from .server import bind
 from .util import read_json, write_json
@@ -109,6 +108,7 @@ class Desktop:
         self.window = None
         self.httpd = None
         self.root: Path | None = None
+        self.named = ""  # the folder the window is on or is opening, for its title bar
         self.lang = language()
         self.at_home = False  # the window shows the start page, so news about the account redraws it
         self.browse = webbrowser.open
@@ -134,61 +134,20 @@ class Desktop:
 
     def loading(self, state: dict, again: bool = False) -> str:
         """The page on show while a folder is read: what is being found in it, as it is found."""
-        say = self.say
-        text = {
-            "locale": self.lang,
-            "doing": say("Building the graph again", "Reconstruyendo el grafo") if again
-                     else say("Reading the folder", "Leyendo la carpeta"),
-            "ready": say("Ready", "Listo"),
-            "files": say("Files", "Archivos"), "nodes": say("Nodes", "Nodos"),
-            "edges": say("Relations", "Relaciones"), "communities": say("Groups", "Grupos"),
-            "steps": {"files": say("Finding the files", "Buscar los archivos"),
-                      "code": say("Reading the code", "Leer el código"),
-                      "notes": say("Notes, images and saved links", "Notas, imágenes y enlaces guardados"),
-                      "history": say("Git history", "Historia de git"),
-                      "groups": say("Grouping what belongs together", "Agrupar lo que va junto"),
-                      "writing": say("Drawing the graph", "Dibujar el grafo")},
-            "of": say("of", "de"), "since": say("since", "desde"),
-            "noHistory": say("not a repository", "no es un repositorio"),
-            "commits": ["commit", "commits"], "authors": say(["author", "authors"], ["autor", "autores"]),
-            "fileWords": say(["file", "files"], ["archivo", "archivos"]),
-            "noteWords": say(["note", "notes"], ["nota", "notas"]),
-            "imageWords": say(["image", "images"], ["imagen", "imágenes"]),
-            "savedWords": say(["saved link", "saved links"], ["enlace", "enlaces"]),
-            "groupWords": say(["group", "groups"], ["grupo", "grupos"]),
-        }
-
-        def blob(data) -> str:  # escaping "<" keeps a folder's name from closing the script tag it is written into
-            return json.dumps(data, ensure_ascii=False).replace("<", "\\u003c")
-
-        package = resources.files("linkednodes")
-        page = package.joinpath("loading.html").read_text(encoding="utf-8")
-        for mark, value in (("__LANG__", self.lang), ("__BAR__", str(titlebar.HEIGHT)), ("__TEXT__", blob(text)),
-                            ("__STATE__", blob(state)),
-                            ("__ANIME__", package.joinpath("vendor").joinpath("anime.umd.min.js").read_text(encoding="utf-8"))):
-            page = page.replace(mark, value)
-        return page
+        return loading.page(state, self.lang, again, titlebar.HEIGHT)
 
     def read(self, root: Path, again: bool = False) -> None:
         """Scan a folder and build its graph, with the window showing what is found meanwhile."""
         root = root.resolve()
-        state, lock, over = {"step": "files", "name": root.name, "path": str(root)}, threading.Lock(), threading.Event()
-
-        def progress(step: str, **facts) -> None:
-            with lock:
-                state.update(facts, step=step)
-
-        def repository() -> None:  # which repository this is; asked on the side, git being slow to start
-            name, on = github.repo_name(gitops.origin(root)), gitops.branch(root)
-            with lock:
-                state.update(repo=name, branch=on)
+        over = threading.Event()
+        self.reading, self.named = True, root.name
+        progress = loading.Progress(root)
 
         def tell() -> None:  # the page hears a few times a second, never once for every file
             sent = ""
             while True:
                 last = over.is_set()
-                with lock:
-                    now = json.dumps(state)
+                now = json.dumps(progress.account())
                 if now != sent:
                     sent = now
                     try:
@@ -199,12 +158,10 @@ class Desktop:
                     return
                 over.wait(.12)
 
-        self.reading = True
         teller = threading.Thread(target=tell, daemon=True)
         try:
-            self.window.load_html(self.loading(dict(state), again))
+            self.window.load_html(self.loading(progress.account(), again))
             teller.start()
-            threading.Thread(target=repository, daemon=True).start()
             pipeline.scan(root, progress)
             pipeline.build(root, progress)
         finally:
@@ -222,7 +179,7 @@ class Desktop:
             pipeline.build(root)
         httpd = bind(root, PORT)
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
-        old, self.httpd, self.root = self.httpd, httpd, root
+        old, self.httpd, self.root, self.named = self.httpd, httpd, root, root.name
         if old:
             old.shutdown()
             old.server_close()
@@ -285,7 +242,7 @@ class Desktop:
         """Point the window at a folder; runs off the main thread, so it may take its time."""
         if self.reading:
             return
-        self.at_home = False
+        self.at_home, self.named = False, root.name
         try:
             if (root / OUT_DIR / "graph.json").exists():
                 self.window.load_html(self.message(self.say("Opening the graph.", "Abriendo el grafo.")))
@@ -322,7 +279,7 @@ class Desktop:
         ]
         buttons = {"minimize": say("Minimize", "Minimizar"), "maximize": say("Maximize or restore", "Maximizar o restaurar"),
                    "close": say("Close", "Cerrar")} if os.name == "nt" else None
-        title = self.root.name if self.root and not self.at_home else ""
+        title = "" if self.at_home else self.named
         self.window.evaluate_js(titlebar.script(menus, title, buttons))
 
     def redraw(self) -> None:
