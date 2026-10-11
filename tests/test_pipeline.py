@@ -951,37 +951,71 @@ def browser() -> str | None:
 
 
 class ViewerTest(unittest.TestCase):
-    # Once the page has had time to lay the graph out, it counts what its canvas shows.
+    # Once the page has had time to lay the graph out, it counts what its canvas shows and says so.
     COUNT = """<script>
     setTimeout(() => {
       const canvas = document.getElementById('canvas');
       const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
       let painted = 0;
       for (let i = 3; i < pixels.length; i += 4) if (pixels[i]) painted++;
-      document.documentElement.dataset.painted = painted;
+      fetch('/painted?count=' + painted);
     }, 1500);
     </script>"""
 
     def painted(self, data: dict) -> int:
-        """How much of the canvas the viewer has drawn on for a graph, in pixels."""
+        """How much of the canvas the viewer has drawn on for a graph, in pixels.
+
+        The page is served to a browser that shows no window, and reports back to the same
+        server. That asks nothing of the browser but to load a page, which every one of
+        them does the same way; having it print the page instead hangs Chrome on macOS.
+        """
         program = browser()
         if not program:
             # Where the tests are run for everyone, a missing browser must not pass for a passing test.
             self.assertFalse(os.environ.get("LINKEDNODES_NEED_BROWSER"), "no Chromium browser was found")
             self.skipTest("no Chromium browser is installed")
+        page, told, heard = (pipeline._viewer("test", data) + self.COUNT).encode("utf-8"), {}, threading.Event()
+
+        class Page(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                body = page
+                if self.path.startswith("/painted?count="):
+                    told["painted"], body = int(self.path.split("=", 1)[1]), b"noted"
+                    heard.set()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        class Quiet(ThreadingHTTPServer):
+            def handle_error(self, request, client_address):  # the browser is stopped mid-request at the end
+                pass
+
+        httpd = Quiet(("127.0.0.1", 0), Page)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
-            page = Path(folder) / "graph.html"
-            page.write_text(pipeline._viewer("test", data) + self.COUNT, encoding="utf-8")
-            command = [program, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
-                       "--no-default-browser-check", "--use-mock-keychain", "--disable-extensions",
-                       f"--user-data-dir={Path(folder) / 'profile'}", "--window-size=1200,800",
-                       "--virtual-time-budget=5000", "--dump-dom", page.as_uri()]
-            try:
-                shown = subprocess.run(command, capture_output=True, timeout=120).stdout.decode("utf-8", "replace")
-            except subprocess.TimeoutExpired as late:  # say what it was doing, rather than only that it was slow
-                self.fail(f"{program} did not finish: {(late.stderr or b'')[-400:].decode('utf-8', 'replace')}")
-        self.assertIn('data-painted="', shown, "the page did not run to the end")
-        return int(shown.split('data-painted="', 1)[1].split('"', 1)[0])
+            # What the browser prints goes to a file: its helper processes outlive it for a moment
+            # and would keep a pipe open.
+            with open(Path(folder) / "browser.log", "wb") as log:
+                shown = subprocess.Popen(
+                    [program, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+                     "--no-default-browser-check", "--use-mock-keychain", "--disable-extensions",
+                     f"--user-data-dir={Path(folder) / 'profile'}", "--window-size=1200,800",
+                     f"http://127.0.0.1:{httpd.server_address[1]}/"], stdout=log, stderr=log)
+                try:
+                    arrived = heard.wait(90)
+                finally:
+                    shown.kill()
+                    shown.wait(30)
+                    httpd.shutdown()
+                    httpd.server_close()
+            said = (Path(folder) / "browser.log").read_bytes().decode("utf-8", "replace")
+        self.assertTrue(arrived, f"the page never said what it drew; the browser said: {said[-400:]}")
+        return told["painted"]
 
     def test_a_node_with_hundreds_of_links_is_still_drawn(self):
         # Its springs once threw the layout so far apart that nothing was left on the canvas.
