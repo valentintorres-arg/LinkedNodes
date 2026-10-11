@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "linkednodes"
-version = "0.2.0"
+version = "0.3.0"
 description = "Turn a folder of code, notes, saved links and images into a knowledge graph."
 readme = "README.md"
 license = "MIT"
